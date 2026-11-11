@@ -3,104 +3,110 @@
 ![Go Version](https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
+English | [中文](README.zh.md)
+
 # miniapollo
 
-**嵌入式 Apollo 配置中心 mock，专为单元测试而生**
+**An embedded Apollo config center mock, built for unit tests.**
 
-在测试里起一个真正的 Apollo 太重了（Meta/Config/Admin 三件套 + MySQL）。`miniapollo` 是一个**纯标准库、零第三方依赖**的进程内
-HTTP 服务，完整模拟 Apollo **Config Service 对客户端暴露的行为**，让真实 Apollo 客户端（Go
-的 [agollo](https://github.com/apolloconfig/agollo)、Java SDK、[apollo-client](https://github.com/apolloconfig/apollo)
-等）无需感知地连进来。
+Spinning up a real Apollo in tests is heavy (Meta + Config + Admin + MySQL). `miniapollo` is a **pure standard-library,
+zero-dependency** in-process HTTP server that faithfully simulates the **Config Service behavior exposed to Apollo
+clients**, so real Apollo clients (Go's [agollo](https://github.com/apolloconfig/agollo), the Java
+SDK, [apollo-client](https://github.com/apolloconfig/apollo), etc.) can connect without any modification.
 
-## 为什么需要 miniapollo
+## Why miniapollo
 
-测试 Apollo 客户端逻辑时，通常面临两个选择：
+When testing Apollo client logic, you typically face two options:
 
-| 方案           | 问题                                                     |
-|--------------|--------------------------------------------------------|
-| 起一套真 Apollo  | Meta + Config + Admin 三件套、MySQL、Eureka — CI 里跑不动，维护成本高 |
-| 手写 mock HTTP | 容易遗漏长轮询语义、服务发现、文件型 namespace 折叠等细节，mock 与真实行为脱节        |
+| Approach              | Problem                                                                                                      |
+|-----------------------|--------------------------------------------------------------------------------------------------------------|
+| Spin up real Apollo   | Meta + Config + Admin trio, MySQL, Eureka — too heavy for CI, high maintenance cost                          |
+| Hand-rolled HTTP mock | Easy to miss long-poll semantics, service discovery, file-namespace folding — mock drifts from real behavior |
 
-miniapollo 的切入点：**用一个进程内 HTTP 服务替代真 Apollo**，只模拟客户端能观察到的行为（`/configs`、`/notifications/v2`
-长轮询、`/services/config` 服务发现），让真实客户端无感知地连进来，测试代码只需 `Set` / `SetWith` 发布配置即可。
+miniapollo's approach: **replace real Apollo with an in-process HTTP server** that only simulates what clients can
+observe (`/configs`, `/notifications/v2` long-poll, `/services/config` service discovery). Real clients connect
+transparently; test code just calls `Set` / `SetWith` to publish configs.
 
-### 适用场景
+### Use cases
 
-- 单元测试中需要读取 Apollo 配置的业务逻辑
-- 测试配置变更后的热刷新行为（`OnChange` / `OnNewestChange` 回调）
-- 本地开发调试，不想依赖外部 Apollo 实例
-- CI 流水线中跑集成测试，无法启动完整 Apollo
+- Unit tests for business logic that reads Apollo configs
+- Testing hot-reload behavior on config changes (`OnChange` / `OnNewestChange` callbacks)
+- Local development without an external Apollo instance
+- CI pipelines running integration tests where a full Apollo stack is impractical
 
 ```go
-m := miniapollo.StartT(t)                       // 起服务，测试结束自动关闭
-m.Set("application", map[string]string{         // 发布一个 namespace（自动出新 release）
+m := miniapollo.StartT(t)                       // start server, auto-closed on test end
+m.Set("application", map[string]string{         // publish a namespace (auto new release)
     "rpc.timeout": "100",
 })
-m.Set("application.yml", map[string]string{"log": "info"})  // 文件型 namespace 也行
+m.Set("application.yml", map[string]string{"log": "info"})  // file-type namespaces work too
 
-// 把你的客户端/被测代码指向 m.URL()
+// Point your client / code under test at m.URL()
 //   agollo:  env APOLLO_META=m.URL(), APP_ID=SampleApp
 //   Java:    -Dapollo.meta=m.URL() -Dapp.id=SampleApp
 ```
 
-## 模拟了 Apollo 的哪些行为
+## What miniapollo simulates
 
-| Apollo 行为                                                  | miniapollo | 说明                                                                                                                             |
-|------------------------------------------------------------|------------|--------------------------------------------------------------------------------------------------------------------------------|
-| `GET /configs/{appId}/{cluster}/{namespace}`               | ✅          | 返回 `ApolloConfigDTO`：`configurations` + `releaseKey`；未发布 → **404**（客户端走本地缓存，与真实一致）                                             |
-| properties / `.yml` / `.yaml` / `.json` / `.txt` namespace | ✅          | 文件型 namespace 按真实方式折叠为 `configurations["content"]`；`.json` 为 map 的 JSON 序列化，`.yml/.yaml` 为扁平 `key: value`，`.txt` 为 `key=value` |
-| `GET /notifications/v2` **长轮询**                            | ✅          | 客户端 id 落后 → 立即 200 返回**首个变化的 namespace**（真实 Apollo 同样只回一个）；无变化 → 挂住请求直到有发布或超时；超时返回 **404**（"无变更"，客户端继续下一轮）                     |
-| `trigger` 参数（v2）                                           | ✅          | 按秒指定挂起时长，钳制在 1s..60s；非法值回退默认，与真实服务端一致                                                                                          |
-| 未创建的 namespace 参与通知                                        | ✅          | 服务端视其为 id `-1`：客户端初始 `-1` 与之相等 → 不触发通知（真实 Apollo 语义）                                                                           |
-| `notificationId` 语义                                        | ✅          | 每次发布 +1，per-(appId,cluster,namespace) 独立计数                                                                                     |
-| `releaseKey` 格式                                            | ✅          | `yyyyMMddHHmmss-<12hex>`，每次发布轮换                                                                                                |
-| `GET /notifications`（v1）                                   | ✅          | 同 v2 逻辑（真实客户端兼容层）                                                                                                              |
-| `GET /services/config`（Meta 服务发现）                          | ✅          | 返回 `APOLLO-CONFIGSERVICE` 单实例，`homepageUrl` 即本服务 —— 客户端只给 meta 地址也能找到配置服务                                                      |
-| 默认 `cluster=default`                                       | ✅          | 通知请求缺 cluster 时按 `default` 处理                                                                                                  |
-| 404/400 错误体                                                | ✅          | `{"message": "..."}`（Spring 风格错误体）                                                                                             |
-| 客户端断连                                                      | ✅          | 挂起的长轮询随 `r.Context().Done()` 释放，不泄漏 goroutine                                                                                  |
-| 并发发布/多客户端轮询                                                | ✅          | 发布原子唤醒所有等待者；醒来后重算全部差异，事件不会丢失                                                                                                   |
+| Apollo behavior                                             | miniapollo | Notes                                                                                                                                                                                                                             |
+|-------------------------------------------------------------|------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `GET /configs/{appId}/{cluster}/{namespace}`                | ✅          | Returns `ApolloConfigDTO`: `configurations` + `releaseKey`; unpublished → **404** (client falls back to local cache, same as real Apollo)                                                                                         |
+| properties / `.yml` / `.yaml` / `.json` / `.txt` namespaces | ✅          | File-type namespaces folded into `configurations["content"]` the real way; `.json` is JSON-serialized map, `.yml/.yaml` is flat `key: value`, `.txt` is `key=value`                                                               |
+| `GET /notifications/v2` **long-poll**                       | ✅          | Client id behind → immediate 200 with the **first changed namespace** (real Apollo also returns only one); no change → request hangs until publish or timeout; timeout returns **404** ("no change", client continues next round) |
+| `trigger` parameter (v2)                                    | ✅          | Specifies hang duration in seconds, clamped to 1s..60s; invalid values fall back to default, matching real server behavior                                                                                                        |
+| Non-existent namespaces in notifications                    | ✅          | Server treats them as id `-1`: client initial `-1` equals it → no notification triggered (real Apollo semantics)                                                                                                                  |
+| `notificationId` semantics                                  | ✅          | Increments by 1 on each publish, counted independently per (appId, cluster, namespace)                                                                                                                                            |
+| `releaseKey` format                                         | ✅          | `yyyyMMddHHmmss-<12hex>`, rotated on each publish                                                                                                                                                                                 |
+| `GET /notifications` (v1)                                   | ✅          | Same logic as v2 (real client compatibility layer)                                                                                                                                                                                |
+| `GET /services/config` (Meta service discovery)             | ✅          | Returns a single `APOLLO-CONFIGSERVICE` instance with `homepageUrl` pointing to this server — clients given only the meta address can still find the config service                                                               |
+| Default `cluster=default`                                   | ✅          | Notification requests missing cluster are treated as `default`                                                                                                                                                                    |
+| 404/400 error bodies                                        | ✅          | `{"message": "..."}` (Spring-style error body)                                                                                                                                                                                    |
+| Client disconnect                                           | ✅          | Hung long-polls released via `r.Context().Done()`, no goroutine leaks                                                                                                                                                             |
+| Concurrent publishes / multi-client polling                 | ✅          | Publish atomically wakes all waiters; on wake, full diff is recomputed — no events lost                                                                                                                                           |
 
-### 暂不模拟（与真实 Apollo 的差异）
+### Not simulated (differences from real Apollo)
 
-- **Portal / OpenAPI**（`/openapi/v1/*`）：那是管理面接口，客户端测试用不到。
-- **灰度发布（Grayscale）、发布审批、公共 namespace 关联**：config service 对客户端不呈现这些概念。
-- `Set` 即发布（隐式 release），没有"改了没发布"的中间态 —— 测试里少一步，语义更直接；真实感场景可用 `SetContent` + `Publish`
-  组合。
-- Admin Service `/services/admin`：无消费方，省略。
-- 集群内多实例负载均衡：单实例即代表集群。
+- **Portal / OpenAPI** (`/openapi/v1/*`): management-plane APIs, not needed for client tests.
+- **Grayscale release, publish approval, public namespace association**: config service doesn't expose these concepts to
+  clients.
+- `Set` is an implicit publish (no "modified but unpublished" intermediate state) — one less step in tests, more direct
+  semantics; for realistic scenarios use `SetContent` + `Publish`.
+- Admin Service `/services/admin`: no consumers, omitted.
+- Multi-instance load balancing within a cluster: a single instance represents the cluster.
 
-> 差异设计原则：**只模拟客户端可观察到的行为**。凡是客户端看不见的（Portal UI、DB、Eureka 集群拓扑），一律不作 —— 这是
-> miniapollo 与"起一套真 Apollo"的本质区别。
+> Design principle: **only simulate what clients can observe**. Anything invisible to clients (Portal UI, DB, Eureka
+> cluster topology) is intentionally omitted — this is the fundamental difference between miniapollo and "spinning up real
+> Apollo".
 
-## 已验证的真实客户端
+## Verified real clients
 
-| 客户端                                                          | 状态     | 说明                                                                                 |
-|--------------------------------------------------------------|--------|------------------------------------------------------------------------------------|
-| [agollo v5](https://github.com/apolloconfig/agollo) (Go SDK) | ✅ 示例通过 | 开箱即用（v5.0.0，API 兼容 v4）；见 `example/agollo/main.go`（`go run example/agollo/main.go`） |
+| Client                                                       | Status           | Notes                                                                                                                 |
+|--------------------------------------------------------------|------------------|-----------------------------------------------------------------------------------------------------------------------|
+| [agollo v5](https://github.com/apolloconfig/agollo) (Go SDK) | ✅ Example passes | Works out of the box (v5.0.0, API compatible with v4); see `example/agollo/main.go` (`go run example/agollo/main.go`) |
 
-agollo 适配要点（其他客户端同理）：`AppConfig.IP` 填 `m.URL()`（meta 地址），`AppID`/`Cluster`/`NamespaceName`
-与发布维度一致即可。miniapollo 的 `/services/config` 会把自己注册为 config service，客户端无需额外地址。
+agollo integration notes (same applies to other clients): set `AppConfig.IP` to `m.URL()` (meta address), and keep
+`AppID`/`Cluster`/`NamespaceName` consistent with the publish dimensions. miniapollo's `/services/config` registers
+itself as the config service, so clients need no extra address.
 
 ### AddChangeListener / OnNewestChange
 
-agollo v5 的 `AddChangeListener` 接受 `storage.ChangeListener` 接口（需实现 `OnChange` 和 `OnNewestChange` 两个方法），不接受裸
-`func`。两个回调的区别：
+agollo v5's `AddChangeListener` accepts a `storage.ChangeListener` interface (requiring both `OnChange` and
+`OnNewestChange` methods), not a bare `func`. The two callbacks differ:
 
-| 回调               | 事件类型                       | 触发时机                  | 数据内容                                                                            |
-|------------------|----------------------------|-----------------------|---------------------------------------------------------------------------------|
-| `OnChange`       | `*storage.ChangeEvent`     | 每次检测到配置变更             | 只包含变更的 key，`ConfigChange.OldValue`/`NewValue` 为 `interface{}`（需 `.(string)` 断言） |
-| `OnNewestChange` | `*storage.FullChangeEvent` | 每次配置刷新（先于 `OnChange`） | 包含 namespace 的**全量键值快照**，`Changes` 为 `map[string]interface{}`                   |
+| Callback         | Event type                 | Trigger timing                             | Data content                                                                                         |
+|------------------|----------------------------|--------------------------------------------|------------------------------------------------------------------------------------------------------|
+| `OnChange`       | `*storage.ChangeEvent`     | On each detected config change             | Only changed keys; `ConfigChange.OldValue`/`NewValue` are `interface{}` (need `.(string)` assertion) |
+| `OnNewestChange` | `*storage.FullChangeEvent` | On each config refresh (before `OnChange`) | **Full key-value snapshot** of the namespace; `Changes` is `map[string]interface{}`                  |
 
-完整示例见 `example/agollo/main.go`。
+See `example/agollo/main.go` for a complete example.
 
-## 安装与使用
+## Installation & Usage
 
 ```
 go get github.com/odkrjs/miniapollo
 ```
 
-### 单元测试
+### Unit tests
 
 ```go
 func TestFetchConfig(t *testing.T) {
@@ -108,31 +114,31 @@ func TestFetchConfig(t *testing.T) {
     m.SetWith("shop", "dev", "application", map[string]string{"rpc.timeout": "100"})
     m.SetContentWith("shop", "dev", "layout.yaml", "items: [a, b]")
 
-    // 直接对 endpoint 断言，或把 m.URL() 注入你的真实客户端
+    // Assert directly on the endpoint, or inject m.URL() into your real client
     resp, err := http.Get(m.URL() + "/configs/shop/dev/application")
     require.NoError(t, err)
     defer resp.Body.Close()
-    // ...json.Decode / 断言
+    // ...json.Decode / assertions
 }
 ```
 
-### 测"配置变更推送"路径（长轮询被唤醒）
+### Testing the "config change push" path (long-poll wake-up)
 
 ```go
 func TestOnConfigChange(t *testing.T) {
     m := miniapollo.StartT(t)
-    m.SetPollTimeout(150 * time.Millisecond)          // 测试别等 30s
+    m.SetPollTimeout(150 * time.Millisecond)          // don't wait 30s in tests
     m.Set("application", map[string]string{"k": "v"})
 
     got := make(chan struct{})
-    go func() {                                       // 你的客户端：挂长轮询
+    go func() {                                       // your client: hang on long-poll
         resp, _ := http.Get(m.URL() + "/notifications/v2?appId=SampleApp&cluster=default" +
             `&notifications=[{"namespaceName":"application","notificationId":1}]`)
-        if resp.StatusCode == 200 { close(got) }       // 被唤醒即收到 200
+        if resp.StatusCode == 200 { close(got) }       // woken up → received 200
     }()
 
-    time.Sleep(60 * time.Millisecond)                 // 让客户端先挂上
-    m.Set("application", map[string]string{"k": "v2"}) // 发布 → 立即唤醒
+    time.Sleep(60 * time.Millisecond)                 // let the client hang first
+    m.Set("application", map[string]string{"k": "v2"}) // publish → immediate wake-up
 
     select {
     case <-got: // success
@@ -142,7 +148,7 @@ func TestOnConfigChange(t *testing.T) {
 }
 ```
 
-### 接真实客户端（agollo 为例）
+### Connecting a real client (agollo example)
 
 ```go
 m := miniapollo.StartT(t)
@@ -153,84 +159,88 @@ client, err := agollo.StartWithConfig(func() (*config.AppConfig, error) {
         AppID:         "SampleApp",
         Cluster:       "default",
         NamespaceName: "application",
-        IP:            m.URL(),           // meta 地址，miniapollo 自动服务发现
+        IP:            m.URL(),           // meta address, miniapollo handles service discovery
     }, nil
 })
 // client.GetValue("k") → "v"
-// client.AddChangeListener(...) → OnChange / OnNewestChange 回调
+// client.AddChangeListener(...) → OnChange / OnNewestChange callbacks
 ```
 
-完整可运行示例见 `example/agollo/main.go`（`go run example/agollo/main.go`），覆盖三个场景：
+A fully runnable example is in `example/agollo/main.go` (`go run example/agollo/main.go`), covering three scenarios:
 
-1. 完整生命周期（服务发现 → 初始拉取 → 热刷新）
-2. `AddChangeListener` → `OnChange`（OldValue/NewValue 差量回调）
-3. `OnNewestChange`（全量快照回调）
+1. Full lifecycle (service discovery → initial fetch → hot reload)
+2. `AddChangeListener` → `OnChange` (OldValue/NewValue delta callback)
+3. `OnNewestChange` (full snapshot callback)
 
-## API 一览
+## API Reference
 
-| 方法                                               | 说明                                                                    |
-|--------------------------------------------------|-----------------------------------------------------------------------|
-| `NewServer() (*Server, error)`                   | 启动（127.0.0.1 随机端口）                                                    |
-| `StartT(t *testing.T) *Server`                   | 测试助手：启动 + `t.Cleanup(Close)`                                          |
-| `Close()`                                        | 关闭；可重复调用                                                              |
-| `URL() / Host()`                                 | `http://127.0.0.1:port` / `127.0.0.1:port`，给 `APOLLO_META` / meta 地址用 |
-| `Set(ns, kv)`                                    | 发布 namespace（`SampleApp/default` 维度），自动出新 release                     |
-| `SetWith(app, cluster, ns, kv)`                  | 同上，显式三维度                                                              |
-| `SetContent(ns, s)` / `SetContentWith(...)`      | 以原文发布文件型 namespace（真实 YAML/JSON blob）                                 |
-| `Publish(ns)` / `PublishWith(...)`               | 不改值再发布一次（id+1、releaseKey 轮换、唤醒轮询）                                     |
-| `Config(ns)` / `ConfigWith(...)`                 | 读回当前配置（拷贝），断言用                                                        |
-| `ReleaseKey(ns)` / `ReleaseKeyWith(...)`         | 当前 releaseKey                                                         |
-| `NotificationID(ns)` / `NotificationIDWith(...)` | 当前通知 id（发布序号）                                                         |
-| `SetPollTimeout(d)`                              | 长轮询挂起时长，默认 30s（同真实 Apollo）；测试建议 100ms 级                               |
+| Method                                           | Description                                                                                 |
+|--------------------------------------------------|---------------------------------------------------------------------------------------------|
+| `NewServer() (*Server, error)`                   | Start server (127.0.0.1 random port)                                                        |
+| `StartT(t *testing.T) *Server`                   | Test helper: start + `t.Cleanup(Close)`                                                     |
+| `Close()`                                        | Close; safe to call repeatedly                                                              |
+| `URL() / Host()`                                 | `http://127.0.0.1:port` / `127.0.0.1:port`, for `APOLLO_META` / meta address                |
+| `Set(ns, kv)`                                    | Publish namespace (`SampleApp/default` dimension), auto new release                         |
+| `SetWith(app, cluster, ns, kv)`                  | Same, with explicit three dimensions                                                        |
+| `SetContent(ns, s)` / `SetContentWith(...)`      | Publish file-type namespace as raw content (real YAML/JSON blob)                            |
+| `Publish(ns)` / `PublishWith(...)`               | Publish again without changing values (id+1, releaseKey rotation, wake polls)               |
+| `Config(ns)` / `ConfigWith(...)`                 | Read back current config (copy), for assertions                                             |
+| `ReleaseKey(ns)` / `ReleaseKeyWith(...)`         | Current releaseKey                                                                          |
+| `NotificationID(ns)` / `NotificationIDWith(...)` | Current notification id (publish sequence number)                                           |
+| `SetPollTimeout(d)`                              | Long-poll hang duration, default 30s (same as real Apollo); recommend 100ms range for tests |
 
-## 项目结构
+## Project Structure
 
 ```
 miniapollo/
-├── miniapollo.go              # 服务端核心
-├── configs.go                 # /configs 端点
-├── notifications.go           # /notifications 长轮询端点
-├── services.go                # /services/config 服务发现
-├── api.go                     # 公共 API（Set, SetWith, Publish, Config, ...）
-├── miniapollo_test.go         # 自身单元测试（go test 直接运行）
+├── miniapollo.go              # Server core
+├── configs.go                 # /configs endpoint
+├── notifications.go           # /notifications long-poll endpoint
+├── services.go                # /services/config service discovery
+├── api.go                     # Public API (Set, SetWith, Publish, Config, ...)
+├── miniapollo_test.go         # Unit tests (run with go test directly)
 └── example/
     ├── basic/
-    │   └── main.go            # 基础示例：启动服务、发布配置、HTTP 查看
+    │   └── main.go            # Basic example: start server, publish config, view via HTTP
     └── agollo/
-        └── main.go            # agollo 客户端示例：lifecycle + OnChange + OnNewestChange
+        └── main.go            # agollo client example: lifecycle + OnChange + OnNewestChange
 ```
 
-### 运行测试与示例
+### Running tests & examples
 
 ```bash
-# miniapollo 自身单元测试（纯标准库，无需第三方）
+# miniapollo unit tests (pure stdlib, no third-party deps)
 go test -v
 
-# 基础示例
+# Basic example
 go run example/basic/main.go
 
-# agollo 客户端示例（需要 agollo 依赖）
+# agollo client example (requires agollo dependency)
 go run example/agollo/main.go
 ```
 
-## 设计要点
+## Design Highlights
 
-- **零依赖**：miniapollo 自身纯标准库（`net/http` + `encoding/json`），无第三方引入。`go.mod` 中的 agollo 依赖仅用于
-  `example/agollo/` 示例，库本身零依赖。
-- **Go 1.22+**：使用标准库 `ServeMux` 的方法+通配模式（`GET /configs/{appId}/{cluster}/{namespace}`），需要 Go 1.22 及以上。
-- **发布广播**：`Publish` 唤醒所有长轮询等待者（容量 1 的 channel 投递，醒来后重算全量差异 —— 不丢事件的兜底，与 Redis 客户端
-  lib 的惯用法一致）。
-- **锁粒度**：单一 `sync.Mutex` 保护存储与订阅表；handler 不在锁内做 IO。
+- **Zero dependencies**: miniapollo itself uses only the standard library (`net/http` + `encoding/json`), no third-party
+  imports. The agollo dependency in `go.mod` is solely for the `example/agollo/` example; the library itself has zero
+  dependencies.
+- **Go 1.22+**: Uses the standard library `ServeMux` method + wildcard patterns (
+  `GET /configs/{appId}/{cluster}/{namespace}`), requiring Go 1.22 or later.
+- **Publish broadcast**: `Publish` wakes all long-poll waiters (capacity-1 channel delivery; on wake, full diff is
+  recomputed — a safety net against lost events, consistent with the Redis client lib idiom).
+- **Lock granularity**: A single `sync.Mutex` protects storage and the subscription table; handlers never do IO while
+  holding the lock.
 
 ## Contributing
 
-欢迎提 Issue 和 PR。
+Issues and PRs are welcome.
 
-- 新增端点模拟：确保与真实 Apollo Config Service 的 HTTP 响应格式一致（含错误体、状态码语义）
-- 新增客户端示例：放在 `example/` 目录下，以 `main.go` 形式提供可运行程序
-- 单元测试：放在项目根目录的 `_test.go` 文件中（`package miniapollo`），`go test` 直接运行
-- 提交前运行 `go test -v` 和 `go vet ./...` 确保通过
+- New endpoint simulation: ensure HTTP response format matches real Apollo Config Service (including error bodies and
+  status code semantics)
+- New client examples: place under `example/` as a runnable `main.go` program
+- Unit tests: place in `_test.go` files at the project root (`package miniapollo`), runnable via `go test`
+- Run `go test -v` and `go vet ./...` before submitting to ensure they pass
 
 ## License
 
-MIT — 见 [LICENSE](LICENSE)。
+MIT — see [LICENSE](LICENSE).
