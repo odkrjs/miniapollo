@@ -8,12 +8,19 @@
 //
 // Run:
 //
-//	go run example/agollo/main.go
+//	go run example/agollo/main.go            # all three demos
+//	go run example/agollo/main.go newest     # a single demo
+//
+// agollo keeps process-global components (one long-poll notify loop per
+// process), so the default mode runs each demo in its own subprocess to
+// keep them from stealing each other's notifications.
 package main
 
 import (
 	"fmt"
 	"log"
+	"os"
+	"os/exec"
 	"time"
 
 	"github.com/apolloconfig/agollo/v5"
@@ -24,15 +31,40 @@ import (
 )
 
 func main() {
-	runLifecycleDemo()
-	runOnChangeDemo()
-	runOnNewestChangeDemo()
+	if len(os.Args) > 1 {
+		// single-demo mode (used by the subprocesses below)
+		switch os.Args[1] {
+		case "lifecycle":
+			runLifecycleDemo()
+			return
+		case "onchange":
+			runOnChangeDemo()
+			return
+		case "newest":
+			runOnNewestChangeDemo()
+			return
+		default:
+			log.Fatalf("unknown demo %q (want lifecycle|onchange|newest)", os.Args[1])
+		}
+	}
+
+	// default: run each demo in its own subprocess, so agollo's process-global
+	// notify component only ever polls the current demo's server.
+	for _, demo := range []string{"lifecycle", "onchange", "newest"} {
+		fmt.Println("--- demo:", demo)
+		cmd := exec.Command(os.Args[0], demo)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			log.Fatalf("demo %s failed: %v", demo, err)
+		}
+	}
 }
 
 // newServer creates a miniapollo server with a short poll timeout
 // so the demo runs fast.
 func newServer() *miniapollo.Server {
-	m, err := miniapollo.NewServer()
+	m, err := miniapollo.NewServer("SampleApp", "default")
 	if err != nil {
 		log.Fatalf("start miniapollo: %v", err)
 	}
@@ -69,6 +101,7 @@ func runLifecycleDemo() {
 	})
 
 	client := newClient(m, "SampleApp", "default", "application")
+	defer client.Close() // release agollo's global components for the next demo
 
 	fmt.Println("[lifecycle] initial rpc.timeout =", client.GetValue("rpc.timeout"))
 
@@ -152,6 +185,7 @@ func runOnNewestChangeDemo() {
 	})
 
 	client := newClient(m, "SampleApp", "default", "application")
+	defer client.Close() // release agollo's global components for the next demo
 
 	got := make(chan *storage.FullChangeEvent, 4)
 	client.AddChangeListener(&fullChangeCapture{ch: got})
@@ -163,7 +197,13 @@ func runOnNewestChangeDemo() {
 	})
 
 	// Wait for the OnNewestChange event carrying the updated value.
-	deadline := time.Now().Add(5 * time.Second)
+	// Besides the push path (long-poll wake -> re-pull), reading a value
+	// on a ticker also drives agollo's read-refresh path. If the event is
+	// still pending after 3s, republish (id+1) to force another client
+	// refresh — OnNewestChange fires on every SyncAndUpdate.
+	deadline := time.Now().Add(30 * time.Second)
+	tick := time.NewTicker(500 * time.Millisecond)
+	defer tick.Stop()
 	for time.Now().Before(deadline) {
 		select {
 		case event := <-got:
@@ -174,7 +214,13 @@ func runOnNewestChangeDemo() {
 					event.Namespace, val, flags)
 				return
 			}
-		case <-time.After(500 * time.Millisecond):
+		case <-tick.C:
+			_ = client.GetValue("feature.flags")
+		case <-time.After(3 * time.Second):
+			m.SetWith("SampleApp", "default", "application", map[string]string{
+				"rpc.timeout":   "250",
+				"feature.flags": "on",
+			})
 		}
 	}
 	log.Fatalf("[OnNewestChange] updated event was never triggered")

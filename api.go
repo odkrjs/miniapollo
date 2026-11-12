@@ -16,10 +16,11 @@ const (
 	maxTrigger         = 60 * time.Second
 )
 
-// Set publishes namespace ns (DefaultAppID/DefaultCluster) with kv.
+// Set publishes namespace ns with kv under the server's dimensions
+// (the ones given to NewServer / StartT).
 // It auto-publishes a new release, like a portal publish would.
 func (s *Server) Set(ns string, kv map[string]string) {
-	s.SetWith(DefaultAppID, DefaultCluster, ns, kv)
+	s.SetWith(s.appID, s.cluster, ns, kv)
 }
 
 // SetWith publishes a namespace under explicit (appId, cluster) with kv.
@@ -34,9 +35,10 @@ func (s *Server) SetWith(appID, cluster, ns string, kv map[string]string) {
 }
 
 // SetContent publishes a file-type namespace from a raw string body
-// (stored as configurations["content"]). Use this for real YAML/JSON blobs.
+// (stored as configurations["content"]) under the server's dimensions.
+// Use this for real YAML/JSON blobs.
 func (s *Server) SetContent(ns, content string) {
-	s.SetContentWith(DefaultAppID, DefaultCluster, ns, content)
+	s.SetContentWith(s.appID, s.cluster, ns, content)
 }
 
 // SetContentWith is SetContent for explicit (appId, cluster).
@@ -48,11 +50,11 @@ func (s *Server) SetContentWith(appID, cluster, ns, content string) {
 	s.publishLocked(appID, cluster, ns)
 }
 
-// Publish re-publishes ns (Default dimensions) without changing values:
+// Publish re-publishes ns (server's dimensions) without changing values:
 // a new releaseKey and a bumped notification id, waking long pollers.
 // Useful to simulate "edited and released again" in tests.
 func (s *Server) Publish(ns string) {
-	s.PublishWith(DefaultAppID, DefaultCluster, ns)
+	s.PublishWith(s.appID, s.cluster, ns)
 }
 
 // PublishWith is Publish for explicit (appId, cluster).
@@ -62,10 +64,10 @@ func (s *Server) PublishWith(appID, cluster, ns string) {
 	s.publishLocked(appID, cluster, ns)
 }
 
-// Config returns the live configurations of ns (Default dimensions),
+// Config returns the live configurations of ns (server's dimensions),
 // or ok=false when it was never set. The map is a copy.
 func (s *Server) Config(ns string) (map[string]string, bool) {
-	return s.ConfigWith(DefaultAppID, DefaultCluster, ns)
+	return s.ConfigWith(s.appID, s.cluster, ns)
 }
 
 // ConfigWith is Config for explicit (appId, cluster).
@@ -79,9 +81,9 @@ func (s *Server) ConfigWith(appID, cluster, ns string) (map[string]string, bool)
 	return copyMap(st.configurations), true
 }
 
-// ReleaseKey returns the current releaseKey of ns (Default dimensions).
+// ReleaseKey returns the current releaseKey of ns (server's dimensions).
 func (s *Server) ReleaseKey(ns string) (string, bool) {
-	return s.ReleaseKeyWith(DefaultAppID, DefaultCluster, ns)
+	return s.ReleaseKeyWith(s.appID, s.cluster, ns)
 }
 
 // ReleaseKeyWith is ReleaseKey for explicit (appId, cluster).
@@ -96,9 +98,9 @@ func (s *Server) ReleaseKeyWith(appID, cluster, ns string) (string, bool) {
 }
 
 // NotificationID returns the current notification id (release sequence
-// number) of ns (Default dimensions); 0 when never published.
+// number) of ns (server's dimensions); 0 when never published.
 func (s *Server) NotificationID(ns string) int64 {
-	return s.NotificationIDWith(DefaultAppID, DefaultCluster, ns)
+	return s.NotificationIDWith(s.appID, s.cluster, ns)
 }
 
 // NotificationIDWith is NotificationID for explicit (appId, cluster).

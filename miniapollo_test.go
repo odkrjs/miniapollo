@@ -9,16 +9,18 @@ import (
 	"time"
 )
 
-// StartT starts a server and wires it to the test lifecycle:
+// StartT starts a server and wires it to the test lifecycle. Every shortcut
+// API (Set / SetContent / Publish / Config / LoadDir / LoadFile / ...)
+// publishes under the given (appID, cluster):
 //
-//	m := miniapollo.StartT(t)
-//	m.Set("application", map[string]string{"timeout": "100"})
-//	// ... point your client at m.URL()
+//	m := miniapollo.StartT(t, "shop", "dev")
+//	m.Set("application", map[string]string{"rpc.timeout": "100"})
+//	// served at /configs/shop/dev/application
 //
 // The server is closed when the test finishes.
-func StartT(t *testing.T) *Server {
+func StartT(t *testing.T, appID, cluster string) *Server {
 	t.Helper()
-	s, err := NewServer()
+	s, err := NewServer(appID, cluster)
 	if err != nil {
 		t.Fatalf("miniapollo: could not start server: %v", err)
 	}
@@ -72,7 +74,7 @@ func poll(t *testing.T, s *Server, appID, cluster string, items []notifyItem, tr
 // ---- /configs ----
 
 func TestConfigsEndpoint(t *testing.T) {
-	s := StartT(t)
+	s := StartT(t, "SampleApp", "default")
 	s.Set("application", map[string]string{"timeout": "100"})
 	s.SetWith("myapp", "pro", "application", map[string]string{"k": "v"})
 
@@ -112,7 +114,7 @@ func TestConfigsEndpoint(t *testing.T) {
 }
 
 func TestConfigsFileNamespaces(t *testing.T) {
-	s := StartT(t)
+	s := StartT(t, "SampleApp", "default")
 
 	// .yml -> flattened to content=Apollo-style single "content" entry
 	s.Set("application.yml", map[string]string{"server": "localhost", "port": "8080"})
@@ -146,7 +148,7 @@ func TestConfigsFileNamespaces(t *testing.T) {
 // ---- /notifications ----
 
 func TestNotificationsImmediateChange(t *testing.T) {
-	s := StartT(t)
+	s := StartT(t, "SampleApp", "default")
 	s.Set("application", map[string]string{"a": "b"}) // id becomes 1
 
 	// client initial id -1 vs server id 1 -> instant 200
@@ -176,7 +178,7 @@ func TestNotificationsImmediateChange(t *testing.T) {
 }
 
 func TestNotificationsWakeOnPublish(t *testing.T) {
-	s := StartT(t)
+	s := StartT(t, "SampleApp", "default")
 	s.Set("application", map[string]string{"a": "1"}) // id 1
 
 	type res struct {
@@ -209,7 +211,7 @@ func TestNotificationsWakeOnPublish(t *testing.T) {
 }
 
 func TestNotificationsFirstChangedOnly(t *testing.T) {
-	s := StartT(t)
+	s := StartT(t, "SampleApp", "default")
 	s.Set("ns.one", map[string]string{"a": "1"}) // id 1
 	s.Set("ns.two", map[string]string{"b": "2"}) // id 1
 
@@ -229,7 +231,7 @@ func TestNotificationsFirstChangedOnly(t *testing.T) {
 }
 
 func TestNotificationsAbsentNamespaceHolds(t *testing.T) {
-	s := StartT(t)
+	s := StartT(t, "SampleApp", "default")
 	s.SetPollTimeout(100 * time.Millisecond)
 
 	// namespace never published: server id -1 == client -1 -> no change
@@ -241,7 +243,7 @@ func TestNotificationsAbsentNamespaceHolds(t *testing.T) {
 }
 
 func TestNotificationsTriggerParam(t *testing.T) {
-	s := StartT(t)
+	s := StartT(t, "SampleApp", "default")
 	s.Set("application", map[string]string{"a": "b"})
 
 	start := time.Now()
@@ -267,7 +269,7 @@ func TestNotificationsTriggerParam(t *testing.T) {
 // ---- /services/config ----
 
 func TestServicesConfig(t *testing.T) {
-	s := StartT(t)
+	s := StartT(t, "SampleApp", "default")
 	resp, err := http.Get(s.URL() + "/services/config")
 	if err != nil {
 		t.Fatal(err)
@@ -288,7 +290,7 @@ func TestServicesConfig(t *testing.T) {
 // ---- API surface ----
 
 func TestPublicAPI(t *testing.T) {
-	s := StartT(t)
+	s := StartT(t, "SampleApp", "default")
 	if v, ok := s.Config("application"); ok {
 		t.Fatalf("unpublished Config should miss, got %v", v)
 	}
@@ -337,7 +339,7 @@ func TestPublicAPI(t *testing.T) {
 // ---- end-to-end: full client flow against the embedded server ----
 
 func TestEndToEndClientFlow(t *testing.T) {
-	s := StartT(t)
+	s := StartT(t, "SampleApp", "default")
 	s.SetPollTimeout(200 * time.Millisecond)
 
 	// 1. initial config goes live
@@ -401,7 +403,7 @@ func TestEndToEndClientFlow(t *testing.T) {
 }
 
 func TestBadNotificationRequests(t *testing.T) {
-	s := StartT(t)
+	s := StartT(t, "SampleApp", "default")
 
 	resp, err := http.Get(s.URL() + "/notifications/v2?appId=x&notifications=notjson")
 	if err != nil {
@@ -433,7 +435,7 @@ func TestBadNotificationRequests(t *testing.T) {
 }
 
 func TestServerCloseIdempotent(t *testing.T) {
-	s, err := NewServer()
+	s, err := NewServer("SampleApp", "default")
 	if err != nil {
 		t.Fatal(err)
 	}

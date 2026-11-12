@@ -19,12 +19,6 @@ import (
 	"time"
 )
 
-// Default dimensions used by the shortcut APIs (Set / Publish / Lookup).
-const (
-	DefaultAppID   = "SampleApp"
-	DefaultCluster = "default"
-)
-
 // Server is the embedded Apollo configuration server.
 // It is safe for concurrent use.
 type Server struct {
@@ -33,6 +27,12 @@ type Server struct {
 	ln     net.Listener
 	srv    *http.Server
 	urlStr string
+
+	// appID / cluster are the dimensions used by the shortcut APIs
+	// (Set / Publish / Config / LoadDir / ...).
+	// Immutable after construction; read without the lock is safe.
+	appID   string
+	cluster string
 
 	// pollTimeout is how long /notifications hold a request when nothing
 	// changed, mirroring Apollo's long-polling behaviour.
@@ -55,12 +55,26 @@ type namespaceState struct {
 }
 
 // NewServer starts a mini Apollo server listening on 127.0.0.1 with a random
-// port and returns it. Always pair with Close (or use StartT in tests).
-func NewServer() (*Server, error) {
+// port. All shortcut APIs (Set / SetContent / Publish / Config / ReleaseKey /
+// NotificationID / LoadDir / LoadFile / ...) publish under the given
+// (appID, cluster):
+//
+//	m, _ := miniapollo.NewServer("shop", "dev")
+//	m.Set("application", map[string]string{"rpc.timeout": "100"})
+//	// served at /configs/shop/dev/application
+//
+// Either value must be non-empty. Always pair with Close (or use StartT in
+// tests).
+func NewServer(appID, cluster string) (*Server, error) {
+	if appID == "" || cluster == "" {
+		return nil, fmt.Errorf("miniapollo: appId and cluster must be non-empty")
+	}
 	s := &Server{
-		pollTimeout: defaultPollTimeout,
-		store:       map[string]map[string]map[string]*namespaceState{},
-		watchers:    map[int64]chan struct{}{},
+		appID:         appID,
+		cluster:       cluster,
+		pollTimeout:   defaultPollTimeout,
+		store:         map[string]map[string]map[string]*namespaceState{},
+		watchers:      map[int64]chan struct{}{},
 	}
 
 	mux := http.NewServeMux()

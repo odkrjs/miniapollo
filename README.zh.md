@@ -34,8 +34,8 @@ miniapollo 的切入点：**用一个进程内 HTTP 服务替代真 Apollo**，�
 - CI 流水线中跑集成测试，无法启动完整 Apollo
 
 ```go
-m := miniapollo.StartT(t)                       // 起服务，测试结束自动关闭
-m.Set("application", map[string]string{         // 发布一个 namespace（自动出新 release）
+m := miniapollo.StartT(t, "SampleApp", "default")  // 起服务，测试结束自动关闭
+m.Set("application", map[string]string{            // 发布一个 namespace（自动出新 release）
     "rpc.timeout": "100",
 })
 m.Set("application.yml", map[string]string{"log": "info"})  // 文件型 namespace 也行
@@ -106,9 +106,9 @@ go get github.com/odkrjs/miniapollo
 
 ```go
 func TestFetchConfig(t *testing.T) {
-    m := miniapollo.StartT(t)
-    m.SetWith("shop", "dev", "application", map[string]string{"rpc.timeout": "100"})
-    m.SetContentWith("shop", "dev", "layout.yaml", "items: [a, b]")
+    m := miniapollo.StartT(t, "shop", "dev")
+    m.Set("application", map[string]string{"rpc.timeout": "100"})
+    m.SetContent("layout.yaml", "items: [a, b]")
 
     // 直接对 endpoint 断言，或把 m.URL() 注入你的真实客户端
     resp, err := http.Get(m.URL() + "/configs/shop/dev/application")
@@ -122,7 +122,7 @@ func TestFetchConfig(t *testing.T) {
 
 ```go
 func TestOnConfigChange(t *testing.T) {
-    m := miniapollo.StartT(t)
+    m := miniapollo.StartT(t, "SampleApp", "default")
     m.SetPollTimeout(150 * time.Millisecond)          // 测试别等 30s
     m.Set("application", map[string]string{"k": "v"})
 
@@ -147,8 +147,8 @@ func TestOnConfigChange(t *testing.T) {
 ### 接真实客户端（agollo 为例）
 
 ```go
-m := miniapollo.StartT(t)
-m.SetWith("SampleApp", "default", "application", map[string]string{"k": "v"})
+m := miniapollo.StartT(t, "SampleApp", "default")
+m.Set("application", map[string]string{"k": "v"})
 
 client, err := agollo.StartWithConfig(func() (*config.AppConfig, error) {
     return &config.AppConfig{
@@ -168,17 +168,52 @@ client, err := agollo.StartWithConfig(func() (*config.AppConfig, error) {
 2. `AddChangeListener` → `OnChange`（OldValue/NewValue 差量回调）
 3. `OnNewestChange`（全量快照回调）
 
+### 创建服务时指定 appId / cluster
+
+所有快捷 API（`Set` / `SetContent` / `Publish` / `Config` / `LoadDir` / ...）都发布到服务器创建时指定的维度。`NewServer(appID, cluster)` / `StartT(t, appID, cluster)` 在创建时一次性指定，免得每次都写 `SetWith`：
+
+```go
+m := miniapollo.StartT(t, "shop", "dev")
+m.Set("application", map[string]string{"rpc.timeout": "100"})
+// 服务于 /configs/shop/dev/application —— 不再需要 SetWith 重复三维度
+```
+
+### 从本地加载配置文件（文件名 = namespace）
+
+`LoadDir` 把目录下每个可识别的配置文件发布为一个 namespace —— 手头已有配置文件时最方便：
+
+```go
+m := miniapollo.StartT(t, "shop", "dev")
+
+loaded, err := m.LoadDir("./configs")
+// loaded == []string{"application", "layout.yml", "rules.json"}
+```
+
+命名遵循真实 Apollo 惯例：
+
+| 文件                     | namespace          | 内容                                        |
+|------------------------|--------------------|---------------------------------------------|
+| `application.properties` | `application`    | 按 `key=value` 逐行解析为扁平 kv               |
+| `layout.yml` / `.yaml`  | `layout.yml`      | 文件原文作为 `configurations["content"]`       |
+| `rules.json`            | `rules.json`      | 原文作为 `content`                          |
+| `notes.txt`             | `notes.txt`       | 原文作为 `content`                          |
+
+子目录、点开头文件、其他扩展名会被跳过。每个文件立即发布（新 release + 通知），挂起的长轮询会被唤醒。`LoadFile` 加载单个文件；`LoadDirWith` / `LoadFileWith` 支持显式指定维度。
+
 ## API 一览
 
 | 方法                                               | 说明                                                                    |
 |--------------------------------------------------|-----------------------------------------------------------------------|
-| `NewServer() (*Server, error)`                   | 启动（127.0.0.1 随机端口）                                                    |
-| `StartT(t *testing.T) *Server`                   | 测试助手：启动 + `t.Cleanup(Close)`                                          |
+| `NewServer(appID, cluster) (*Server, error)`     | 启动（127.0.0.1 随机端口），指定维度（快捷 API 全部用它）                  |
+| `StartT(t, appID, cluster)`                      | 测试助手：启动 + 自动关闭，同时指定维度                                    |
 | `Close()`                                        | 关闭；可重复调用                                                              |
 | `URL() / Host()`                                 | `http://127.0.0.1:port` / `127.0.0.1:port`，给 `APOLLO_META` / meta 地址用 |
-| `Set(ns, kv)`                                    | 发布 namespace（`SampleApp/default` 维度），自动出新 release                     |
+| `Set(ns, kv)`                                    | 发布 namespace（服务器维度），自动出新 release                             |
 | `SetWith(app, cluster, ns, kv)`                  | 同上，显式三维度                                                              |
 | `SetContent(ns, s)` / `SetContentWith(...)`      | 以原文发布文件型 namespace（真实 YAML/JSON blob）                                 |
+| `LoadDir(dir) ([]string, error)`                 | 加载目录下全部配置文件为 namespace（文件名即 namespace），返回排序后列表        |
+| `LoadDirWith(app, cluster, dir)`                 | 同上，显式指定维度                                                            |
+| `LoadFile(file) (string, error)` / `LoadFileWith(...)` | 加载单个配置文件，返回发布成的 namespace                                |
 | `Publish(ns)` / `PublishWith(...)`               | 不改值再发布一次（id+1、releaseKey 轮换、唤醒轮询）                                     |
 | `Config(ns)` / `ConfigWith(...)`                 | 读回当前配置（拷贝），断言用                                                        |
 | `ReleaseKey(ns)` / `ReleaseKeyWith(...)`         | 当前 releaseKey                                                         |
@@ -189,15 +224,18 @@ client, err := agollo.StartWithConfig(func() (*config.AppConfig, error) {
 
 ```
 miniapollo/
-├── miniapollo.go              # 服务端核心
+├── miniapollo.go              # 服务端核心（NewServer）
 ├── configs.go                 # /configs 端点
 ├── notifications.go           # /notifications 长轮询端点
 ├── services.go                # /services/config 服务发现
 ├── api.go                     # 公共 API（Set, SetWith, Publish, Config, ...）
+├── loader.go                  # LoadDir / LoadFile：本地配置文件加载为 namespace
+├── t.go                       # StartT 测试助手
 ├── miniapollo_test.go         # 自身单元测试（go test 直接运行）
+├── loader_test.go             # LoadDir / LoadFile / 维度 单元测试
 └── example/
     ├── basic/
-    │   └── main.go            # 基础示例：启动服务、发布配置、HTTP 查看
+    │   └── main.go            # 基础示例：指定维度 + 发布 + LoadDir
     └── agollo/
         └── main.go            # agollo 客户端示例：lifecycle + OnChange + OnNewestChange
 ```

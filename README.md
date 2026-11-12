@@ -35,8 +35,8 @@ transparently; test code just calls `Set` / `SetWith` to publish configs.
 - CI pipelines running integration tests where a full Apollo stack is impractical
 
 ```go
-m := miniapollo.StartT(t)                       // start server, auto-closed on test end
-m.Set("application", map[string]string{         // publish a namespace (auto new release)
+m := miniapollo.StartT(t, "SampleApp", "default")  // start server, auto-closed on test end
+m.Set("application", map[string]string{            // publish a namespace (auto new release)
     "rpc.timeout": "100",
 })
 m.Set("application.yml", map[string]string{"log": "info"})  // file-type namespaces work too
@@ -110,9 +110,9 @@ go get github.com/odkrjs/miniapollo
 
 ```go
 func TestFetchConfig(t *testing.T) {
-    m := miniapollo.StartT(t)
-    m.SetWith("shop", "dev", "application", map[string]string{"rpc.timeout": "100"})
-    m.SetContentWith("shop", "dev", "layout.yaml", "items: [a, b]")
+    m := miniapollo.StartT(t, "shop", "dev")
+    m.Set("application", map[string]string{"rpc.timeout": "100"})
+    m.SetContent("layout.yaml", "items: [a, b]")
 
     // Assert directly on the endpoint, or inject m.URL() into your real client
     resp, err := http.Get(m.URL() + "/configs/shop/dev/application")
@@ -126,7 +126,7 @@ func TestFetchConfig(t *testing.T) {
 
 ```go
 func TestOnConfigChange(t *testing.T) {
-    m := miniapollo.StartT(t)
+    m := miniapollo.StartT(t, "SampleApp", "default")
     m.SetPollTimeout(150 * time.Millisecond)          // don't wait 30s in tests
     m.Set("application", map[string]string{"k": "v"})
 
@@ -151,8 +151,8 @@ func TestOnConfigChange(t *testing.T) {
 ### Connecting a real client (agollo example)
 
 ```go
-m := miniapollo.StartT(t)
-m.SetWith("SampleApp", "default", "application", map[string]string{"k": "v"})
+m := miniapollo.StartT(t, "SampleApp", "default")
+m.Set("application", map[string]string{"k": "v"})
 
 client, err := agollo.StartWithConfig(func() (*config.AppConfig, error) {
     return &config.AppConfig{
@@ -172,17 +172,52 @@ A fully runnable example is in `example/agollo/main.go` (`go run example/agollo/
 2. `AddChangeListener` → `OnChange` (OldValue/NewValue delta callback)
 3. `OnNewestChange` (full snapshot callback)
 
+### Custom dimensions at server creation
+
+All the shortcut APIs (`Set` / `SetContent` / `Publish` / `Config` / `LoadDir` / ...) publish under the dimensions specified at server creation. `NewServer(appID, cluster)` / `StartT(t, appID, cluster)` let you set them once, instead of repeating `SetWith` on every call:
+
+```go
+m := miniapollo.StartT(t, "shop", "dev")
+m.Set("application", map[string]string{"rpc.timeout": "100"})
+// served at /configs/shop/dev/application — no SetWith repetition
+```
+
+### Loading local config files (file name = namespace)
+
+`LoadDir` publishes every recognized config file in a directory as a namespace — handy when you already keep configs as files on disk and want the embedded server to serve them:
+
+```go
+m := miniapollo.StartT(t, "shop", "dev")
+
+loaded, err := m.LoadDir("./configs")
+// loaded == []string{"application", "layout.yml", "rules.json"}
+```
+
+Naming follows real Apollo conventions:
+
+| File                  | Namespace          | Content                                              |
+|-----------------------|--------------------|------------------------------------------------------|
+| `application.properties` | `application`    | parsed `key=value` lines (flat kv map)               |
+| `layout.yml` / `.yaml`  | `layout.yml`     | raw file text as `configurations["content"]`         |
+| `rules.json`            | `rules.json`     | raw file text as `content`                           |
+| `notes.txt`             | `notes.txt`      | raw file text as `content`                           |
+
+Sub-directories, dot-files and other extensions are skipped. Each file is published immediately (fresh release + notification), so parked long-pollers are woken. `LoadFile` does the same for a single file; `LoadDirWith` / `LoadFileWith` take explicit dimensions.
+
 ## API Reference
 
 | Method                                           | Description                                                                                 |
 |--------------------------------------------------|---------------------------------------------------------------------------------------------|
-| `NewServer() (*Server, error)`                   | Start server (127.0.0.1 random port)                                                        |
-| `StartT(t *testing.T) *Server`                   | Test helper: start + `t.Cleanup(Close)`                                                     |
+| `NewServer(appID, cluster) (*Server, error)`     | Start server (127.0.0.1 random port), shortcut APIs use the given dimensions               |
+| `StartT(t, appID, cluster)`                      | Test helper: start + `t.Cleanup(Close)`, sets dimensions                                    |
 | `Close()`                                        | Close; safe to call repeatedly                                                              |
 | `URL() / Host()`                                 | `http://127.0.0.1:port` / `127.0.0.1:port`, for `APOLLO_META` / meta address                |
-| `Set(ns, kv)`                                    | Publish namespace (`SampleApp/default` dimension), auto new release                         |
+| `Set(ns, kv)`                                    | Publish namespace (server's dimensions), auto new release                                   |
 | `SetWith(app, cluster, ns, kv)`                  | Same, with explicit three dimensions                                                        |
 | `SetContent(ns, s)` / `SetContentWith(...)`      | Publish file-type namespace as raw content (real YAML/JSON blob)                            |
+| `LoadDir(dir) ([]string, error)`                 | Load every config file in dir as a namespace (file name = namespace); returns sorted list   |
+| `LoadDirWith(app, cluster, dir)`                 | Same, for explicit dimensions                                                               |
+| `LoadFile(file) (string, error)` / `LoadFileWith(...)` | Load a single config file; returns the namespace it was published as                 |
 | `Publish(ns)` / `PublishWith(...)`               | Publish again without changing values (id+1, releaseKey rotation, wake polls)               |
 | `Config(ns)` / `ConfigWith(...)`                 | Read back current config (copy), for assertions                                             |
 | `ReleaseKey(ns)` / `ReleaseKeyWith(...)`         | Current releaseKey                                                                          |
@@ -193,15 +228,18 @@ A fully runnable example is in `example/agollo/main.go` (`go run example/agollo/
 
 ```
 miniapollo/
-├── miniapollo.go              # Server core
+├── miniapollo.go              # Server core (NewServer)
 ├── configs.go                 # /configs endpoint
 ├── notifications.go           # /notifications long-poll endpoint
 ├── services.go                # /services/config service discovery
 ├── api.go                     # Public API (Set, SetWith, Publish, Config, ...)
+├── loader.go                  # LoadDir / LoadFile: load local config files as namespaces
+├── t.go                       # StartT test helper
 ├── miniapollo_test.go         # Unit tests (run with go test directly)
+├── loader_test.go             # Unit tests for LoadDir / LoadFile / dimensions
 └── example/
     ├── basic/
-    │   └── main.go            # Basic example: start server, publish config, view via HTTP
+    │   └── main.go            # Basic example: specified dims + publish + LoadDir
     └── agollo/
         └── main.go            # agollo client example: lifecycle + OnChange + OnNewestChange
 ```
