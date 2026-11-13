@@ -24,8 +24,8 @@ When testing Apollo client logic, you typically face two options:
 | Hand-rolled HTTP mock | Easy to miss long-poll semantics, service discovery, file-namespace folding — mock drifts from real behavior |
 
 miniapollo's approach: **replace real Apollo with an in-process HTTP server** that only simulates what clients can
-observe (`/configs`, `/notifications/v2` long-poll, `/services/config` service discovery). Real clients connect
-transparently; test code just calls `Set` / `SetWith` to publish configs.
+observe (`/configs`, the `/configfiles` family, `/notifications/v2` long-poll, `/services/config` service
+discovery). Real clients connect transparently; test code just calls `Set` / `SetWith` to publish configs.
 
 ### Use cases
 
@@ -51,6 +51,9 @@ m.Set("application.yml", map[string]string{"log": "info"})  // file-type namespa
 | Apollo behavior                                             | miniapollo | Notes                                                                                                                                                                                                                             |
 |-------------------------------------------------------------|------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `GET /configs/{appId}/{cluster}/{namespace}`                | ✅          | Returns `ApolloConfigDTO`: `configurations` + `releaseKey`; unpublished → **404** (client falls back to local cache, same as real Apollo)                                                                                         |
+| `GET /configfiles/{appId}/{cluster}/{namespace}` | ✅ | Configurations flattened to `k=v` text, `text/plain` (ConfigFileController properties form) |
+| `GET /configfiles/json/{appId}/{cluster}/{namespace}` | ✅ | Configurations as JSON — **the form agollo requests at first sync**; file-type namespaces arrive as `{"content": "<file>"}`; unpublished → **404 with empty body** (bare 404 here, unlike `/configs`, same as real Apollo) |
+| `GET /configfiles/raw/{appId}/{cluster}/{namespace}` | ✅ | File content verbatim; `Content-Type` by format: `.json` → `application/json`, `.yml/.yaml` → `application/yaml`, else `text/plain`; properties namespaces flatten to `k=v` |
 | properties / `.yml` / `.yaml` / `.json` / `.txt` namespaces | ✅          | File-type namespaces folded into `configurations["content"]` the real way; `.json` is JSON-serialized map, `.yml/.yaml` is flat `key: value`, `.txt` is `key=value`                                                               |
 | `GET /notifications/v2` **long-poll**                       | ✅          | Client id behind → immediate 200 with the **first changed namespace** (real Apollo also returns only one); no change → request hangs until publish or timeout; timeout returns **404** ("no change", client continues next round) |
 | `trigger` parameter (v2)                                    | ✅          | Specifies hang duration in seconds, clamped to 1s..60s; invalid values fall back to default, matching real server behavior                                                                                                        |
@@ -82,7 +85,8 @@ m.Set("application.yml", map[string]string{"log": "info"})  // file-type namespa
 
 | Client                                                       | Status           | Notes                                                                                                                 |
 |--------------------------------------------------------------|------------------|-----------------------------------------------------------------------------------------------------------------------|
-| [agollo v5](https://github.com/apolloconfig/agollo) (Go SDK) | ✅ Example passes | Works out of the box (v5.0.0, API compatible with v4); see `example/agollo/main.go` (`go run example/agollo/main.go`) |
+| [agollo v5](https://github.com/apolloconfig/agollo) (Go SDK) | ✅ Example passes | Works out of the box (v5.0.0); first sync lands real values immediately; see `example/agollo/main.go` (`go run example/agollo/main.go`) |
+| [agollo v4](https://github.com/apolloconfig/agollo) (Go SDK) | ✅ Test passes | v4.4.0 incl. strict `MustStart` — first sync needs `/configfiles/json`, previously failed with "no config was read"; see `example/agollo/agollo_test.go` (`go test ./example/agollo`) |
 
 agollo integration notes (same applies to other clients): set `AppConfig.IP` to `m.URL()` (meta address), and keep
 `AppID`/`Cluster`/`NamespaceName` consistent with the publish dimensions. miniapollo's `/services/config` registers
@@ -230,18 +234,20 @@ Sub-directories, dot-files and other extensions are skipped. Each file is publis
 miniapollo/
 ├── miniapollo.go              # Server core (NewServer)
 ├── configs.go                 # /configs endpoint
+├── configfiles.go             # /configfiles family: properties / json / raw (agollo first-sync)
 ├── notifications.go           # /notifications long-poll endpoint
 ├── services.go                # /services/config service discovery
 ├── api.go                     # Public API (Set, SetWith, Publish, Config, ...)
 ├── loader.go                  # LoadDir / LoadFile: load local config files as namespaces
-├── t.go                       # StartT test helper
-├── miniapollo_test.go         # Unit tests (run with go test directly)
+├── miniapollo_test.go         # Unit tests + StartT test helper (run with go test directly)
+├── configfiles_test.go        # Unit tests for the /configfiles family
 ├── loader_test.go             # Unit tests for LoadDir / LoadFile / dimensions
 └── example/
     ├── basic/
     │   └── main.go            # Basic example: specified dims + publish + LoadDir
     └── agollo/
-        └── main.go            # agollo client example: lifecycle + OnChange + OnNewestChange
+        ├── main.go            # agollo v5 client example: lifecycle + OnChange + OnNewestChange
+        └── agollo_test.go     # agollo v4 MustStart first-sync test (go test ./example/agollo)
 ```
 
 ### Running tests & examples
@@ -255,6 +261,9 @@ go run example/basic/main.go
 
 # agollo client example (requires agollo dependency)
 go run example/agollo/main.go
+
+# agollo v4 strict first-sync test (MustStart, requires agollo dependency)
+go test -race ./example/agollo
 ```
 
 ## Design Highlights

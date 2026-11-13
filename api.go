@@ -114,38 +114,48 @@ func (s *Server) NotificationIDWith(appID, cluster, ns string) int64 {
 	return st.notificationID
 }
 
+// fileFormat returns the Apollo ConfigFileFormat carried by the namespace
+// name ("json" / "yml" / "yaml" / "txt"), or "" for plain properties
+// namespaces — the same case-insensitive suffix check Apollo's
+// determineNamespaceFormat performs.
+func fileFormat(ns string) string {
+	lower := strings.ToLower(ns)
+	for _, format := range []string{"json", "yml", "yaml", "txt"} {
+		if strings.HasSuffix(lower, "."+format) {
+			return format
+		}
+	}
+	return ""
+}
+
+// flattenKV renders the kv map with the given per-entry format string,
+// keys sorted for deterministic output.
+func flattenKV(kv map[string]string, entryFormat string) string {
+	keys := make([]string, 0, len(kv))
+	for k := range kv {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys) // deterministic output for tests
+	var b strings.Builder
+	for _, k := range keys {
+		fmt.Fprintf(&b, entryFormat, k, kv[k])
+	}
+	return b.String()
+}
+
 // effectiveConfig mimics how Apollo serves file-type namespaces:
 // non-properties namespaces arrive at the client as {"content": "<file>"}
 // rather than as a flat key/value map.
 func effectiveConfig(ns string, kv map[string]string) map[string]string {
-	name := strings.ToLower(ns)
-	switch {
-	case strings.HasSuffix(name, ".yml"), strings.HasSuffix(name, ".yaml"):
-		var b strings.Builder
-		keys := make([]string, 0, len(kv))
-		for k := range kv {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys) // deterministic output for tests
-		for _, k := range keys {
-			fmt.Fprintf(&b, "%s: %s\n", k, kv[k])
-		}
-		return map[string]string{"content": b.String()}
-	case strings.HasSuffix(name, ".json"):
+	switch fileFormat(ns) {
+	case "yml", "yaml":
+		return map[string]string{"content": flattenKV(kv, "%s: %s\n")}
+	case "json":
 		blob, _ := json.Marshal(kv)
 		return map[string]string{"content": string(blob)}
-	case strings.HasSuffix(name, ".txt"):
-		var b strings.Builder
-		keys := make([]string, 0, len(kv))
-		for k := range kv {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			fmt.Fprintf(&b, "%s=%s\n", k, kv[k])
-		}
-		return map[string]string{"content": b.String()}
-	default: // .properties or plain namespace
+	case "txt":
+		return map[string]string{"content": flattenKV(kv, "%s=%s\n")}
+	default: // plain properties namespace or .properties suffix
 		return copyMap(kv)
 	}
 }

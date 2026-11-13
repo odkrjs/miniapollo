@@ -2,7 +2,10 @@ module github.com/odkrjs/miniapollo
 
 go 1.22
 
-require github.com/apolloconfig/agollo/v5 v5.0.0
+require (
+	github.com/apolloconfig/agollo/v4 v4.4.0
+	github.com/apolloconfig/agollo/v5 v5.0.0
+)
 
 require (
 	github.com/fsnotify/fsnotify v1.4.9 // indirect

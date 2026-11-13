@@ -23,8 +23,9 @@ HTTP 服务，完整模拟 Apollo **Config Service 对客户端暴露的行为**
 | 起一套真 Apollo  | Meta + Config + Admin 三件套、MySQL、Eureka — CI 里跑不动，维护成本高 |
 | 手写 mock HTTP | 容易遗漏长轮询语义、服务发现、文件型 namespace 折叠等细节，mock 与真实行为脱节        |
 
-miniapollo 的切入点：**用一个进程内 HTTP 服务替代真 Apollo**，只模拟客户端能观察到的行为（`/configs`、`/notifications/v2`
-长轮询、`/services/config` 服务发现），让真实客户端无感知地连进来，测试代码只需 `Set` / `SetWith` 发布配置即可。
+miniapollo 的切入点：**用一个进程内 HTTP 服务替代真 Apollo**，只模拟客户端能观察到的行为（`/configs`、
+`/configfiles` 家族、`/notifications/v2` 长轮询、`/services/config` 服务发现），让真实客户端无感知地连进来，
+测试代码只需 `Set` / `SetWith` 发布配置即可。
 
 ### 适用场景
 
@@ -50,6 +51,9 @@ m.Set("application.yml", map[string]string{"log": "info"})  // 文件型 namespa
 | Apollo 行为                                                  | miniapollo | 说明                                                                                                                             |
 |------------------------------------------------------------|------------|--------------------------------------------------------------------------------------------------------------------------------|
 | `GET /configs/{appId}/{cluster}/{namespace}`               | ✅          | 返回 `ApolloConfigDTO`：`configurations` + `releaseKey`；未发布 → **404**（客户端走本地缓存，与真实一致）                                             |
+| `GET /configfiles/{appId}/{cluster}/{namespace}` | ✅ | configurations 拍平为 `k=v` 文本，`text/plain`（ConfigFileController 的 properties 形态） |
+| `GET /configfiles/json/{appId}/{cluster}/{namespace}` | ✅ | configurations 序列化为 JSON —— **agollo 首次同步请求的正是这个**；文件型 namespace 以 `{"content": "<文件原文>"}` 到达；未发布 → **404 空 body**（与 `/configs` 不同，此处真实 Apollo 就是裸 404） |
+| `GET /configfiles/raw/{appId}/{cluster}/{namespace}` | ✅ | 文件原文返回；`Content-Type` 按格式：`.json` → `application/json`，`.yml/.yaml` → `application/yaml`，其余 `text/plain`；properties namespace 拍平为 `k=v` |
 | properties / `.yml` / `.yaml` / `.json` / `.txt` namespace | ✅          | 文件型 namespace 按真实方式折叠为 `configurations["content"]`；`.json` 为 map 的 JSON 序列化，`.yml/.yaml` 为扁平 `key: value`，`.txt` 为 `key=value` |
 | `GET /notifications/v2` **长轮询**                            | ✅          | 客户端 id 落后 → 立即 200 返回**首个变化的 namespace**（真实 Apollo 同样只回一个）；无变化 → 挂住请求直到有发布或超时；超时返回 **404**（"无变更"，客户端继续下一轮）                     |
 | `trigger` 参数（v2）                                           | ✅          | 按秒指定挂起时长，钳制在 1s..60s；非法值回退默认，与真实服务端一致                                                                                          |
@@ -79,7 +83,8 @@ m.Set("application.yml", map[string]string{"log": "info"})  // 文件型 namespa
 
 | 客户端                                                          | 状态     | 说明                                                                                 |
 |--------------------------------------------------------------|--------|------------------------------------------------------------------------------------|
-| [agollo v5](https://github.com/apolloconfig/agollo) (Go SDK) | ✅ 示例通过 | 开箱即用（v5.0.0，API 兼容 v4）；见 `example/agollo/main.go`（`go run example/agollo/main.go`） |
+| [agollo v5](https://github.com/apolloconfig/agollo) (Go SDK) | ✅ 示例通过 | 开箱即用（v5.0.0），首次同步即刻拿到真实值；见 `example/agollo/main.go`（`go run example/agollo/main.go`） |
+| [agollo v4](https://github.com/apolloconfig/agollo) (Go SDK) | ✅ 测试通过 | v4.4.0 含严格 `MustStart` 首同步（依赖 `/configfiles/json`，缺它会报 "no config was read"）；见 `example/agollo/agollo_test.go`（`go test ./example/agollo`） |
 
 agollo 适配要点（其他客户端同理）：`AppConfig.IP` 填 `m.URL()`（meta 地址），`AppID`/`Cluster`/`NamespaceName`
 与发布维度一致即可。miniapollo 的 `/services/config` 会把自己注册为 config service，客户端无需额外地址。
@@ -226,18 +231,20 @@ loaded, err := m.LoadDir("./configs")
 miniapollo/
 ├── miniapollo.go              # 服务端核心（NewServer）
 ├── configs.go                 # /configs 端点
+├── configfiles.go             # /configfiles 家族：properties / json / raw（agollo 首同步）
 ├── notifications.go           # /notifications 长轮询端点
 ├── services.go                # /services/config 服务发现
 ├── api.go                     # 公共 API（Set, SetWith, Publish, Config, ...）
 ├── loader.go                  # LoadDir / LoadFile：本地配置文件加载为 namespace
-├── t.go                       # StartT 测试助手
-├── miniapollo_test.go         # 自身单元测试（go test 直接运行）
+├── miniapollo_test.go         # 自身单元测试 + StartT 测试助手（go test 直接运行）
+├── configfiles_test.go        # /configfiles 家族单元测试
 ├── loader_test.go             # LoadDir / LoadFile / 维度 单元测试
 └── example/
     ├── basic/
     │   └── main.go            # 基础示例：指定维度 + 发布 + LoadDir
     └── agollo/
-        └── main.go            # agollo 客户端示例：lifecycle + OnChange + OnNewestChange
+        ├── main.go            # agollo v5 客户端示例：lifecycle + OnChange + OnNewestChange
+        └── agollo_test.go     # agollo v4 MustStart 首同步测试（go test ./example/agollo）
 ```
 
 ### 运行测试与示例
@@ -251,6 +258,9 @@ go run example/basic/main.go
 
 # agollo 客户端示例（需要 agollo 依赖）
 go run example/agollo/main.go
+
+# agollo v4 严格首同步测试（MustStart，需要 agollo 依赖）
+go test -race ./example/agollo
 ```
 
 ## 设计要点

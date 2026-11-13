@@ -5,6 +5,10 @@
 // Supported Apollo endpoints (see README for the full compatibility matrix):
 //
 //	GET /configs/{appId}/{cluster}/{namespace}
+//	GET /configfiles/{appId}/{cluster}/{namespace}          (k=v properties text)
+//	GET /configfiles/json/{appId}/{cluster}/{namespace}       (configurations as JSON,
+//	                                                          agollo first-sync form)
+//	GET /configfiles/raw/{appId}/{cluster}/{namespace}        (file content as-is)
 //	GET /notifications/v2?appId=&cluster=&notifications=[...]   (long polling)
 //	GET /notifications?...                                      (v1 alias)
 //	GET /services/config                                        (meta service discovery)
@@ -70,15 +74,18 @@ func NewServer(appID, cluster string) (*Server, error) {
 		return nil, fmt.Errorf("miniapollo: appId and cluster must be non-empty")
 	}
 	s := &Server{
-		appID:         appID,
-		cluster:       cluster,
-		pollTimeout:   defaultPollTimeout,
-		store:         map[string]map[string]map[string]*namespaceState{},
-		watchers:      map[int64]chan struct{}{},
+		appID:       appID,
+		cluster:     cluster,
+		pollTimeout: defaultPollTimeout,
+		store:       map[string]map[string]map[string]*namespaceState{},
+		watchers:    map[int64]chan struct{}{},
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /configs/{appId}/{cluster}/{namespace}", s.handleConfigs)
+	mux.HandleFunc("GET /configfiles/{appId}/{cluster}/{namespace}", s.handleConfigFilesProperties)
+	mux.HandleFunc("GET /configfiles/json/{appId}/{cluster}/{namespace}", s.handleConfigFilesJson)
+	mux.HandleFunc("GET /configfiles/raw/{appId}/{cluster}/{namespace}", s.handleConfigFilesRaw)
 	mux.HandleFunc("GET /notifications/v2", s.handleNotifications)
 	mux.HandleFunc("GET /notifications", s.handleNotifications) // v1 alias
 	mux.HandleFunc("GET /services/config", s.handleServicesConfig)
