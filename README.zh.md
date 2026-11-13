@@ -48,24 +48,24 @@ m.Set("application.yml", map[string]string{"log": "info"})  // 文件型 namespa
 
 ## 模拟了 Apollo 的哪些行为
 
-| Apollo 行为                                                  | miniapollo | 说明                                                                                                                             |
-|------------------------------------------------------------|------------|--------------------------------------------------------------------------------------------------------------------------------|
-| `GET /configs/{appId}/{cluster}/{namespace}`               | ✅          | 返回 `ApolloConfigDTO`：`configurations` + `releaseKey`；未发布 → **404**（客户端走本地缓存，与真实一致）                                             |
-| `GET /configfiles/{appId}/{cluster}/{namespace}` | ✅ | configurations 拍平为 `k=v` 文本，`text/plain`（ConfigFileController 的 properties 形态） |
-| `GET /configfiles/json/{appId}/{cluster}/{namespace}` | ✅ | configurations 序列化为 JSON —— **agollo 首次同步请求的正是这个**；文件型 namespace 以 `{"content": "<文件原文>"}` 到达；未发布 → **404 空 body**（与 `/configs` 不同，此处真实 Apollo 就是裸 404） |
-| `GET /configfiles/raw/{appId}/{cluster}/{namespace}` | ✅ | 文件原文返回；`Content-Type` 按格式：`.json` → `application/json`，`.yml/.yaml` → `application/yaml`，其余 `text/plain`；properties namespace 拍平为 `k=v` |
-| properties / `.yml` / `.yaml` / `.json` / `.txt` namespace | ✅          | 文件型 namespace 按真实方式折叠为 `configurations["content"]`；`.json` 为 map 的 JSON 序列化，`.yml/.yaml` 为扁平 `key: value`，`.txt` 为 `key=value` |
-| `GET /notifications/v2` **长轮询**                            | ✅          | 客户端 id 落后 → 立即 200 返回**首个变化的 namespace**（真实 Apollo 同样只回一个）；无变化 → 挂住请求直到有发布或超时；超时返回 **404**（"无变更"，客户端继续下一轮）                     |
-| `trigger` 参数（v2）                                           | ✅          | 按秒指定挂起时长，钳制在 1s..60s；非法值回退默认，与真实服务端一致                                                                                          |
-| 未创建的 namespace 参与通知                                        | ✅          | 服务端视其为 id `-1`：客户端初始 `-1` 与之相等 → 不触发通知（真实 Apollo 语义）                                                                           |
-| `notificationId` 语义                                        | ✅          | 每次发布 +1，per-(appId,cluster,namespace) 独立计数                                                                                     |
-| `releaseKey` 格式                                            | ✅          | `yyyyMMddHHmmss-<12hex>`，每次发布轮换                                                                                                |
-| `GET /notifications`（v1）                                   | ✅          | 同 v2 逻辑（真实客户端兼容层）                                                                                                              |
-| `GET /services/config`（Meta 服务发现）                          | ✅          | 返回 `APOLLO-CONFIGSERVICE` 单实例，`homepageUrl` 即本服务 —— 客户端只给 meta 地址也能找到配置服务                                                      |
-| 默认 `cluster=default`                                       | ✅          | 通知请求缺 cluster 时按 `default` 处理                                                                                                  |
-| 404/400 错误体                                                | ✅          | `{"message": "..."}`（Spring 风格错误体）                                                                                             |
-| 客户端断连                                                      | ✅          | 挂起的长轮询随 `r.Context().Done()` 释放，不泄漏 goroutine                                                                                  |
-| 并发发布/多客户端轮询                                                | ✅          | 发布原子唤醒所有等待者；醒来后重算全部差异，事件不会丢失                                                                                                   |
+| Apollo 行为                                                  | miniapollo | 说明                                                                                                                                                      |
+|------------------------------------------------------------|------------|---------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `GET /configs/{appId}/{cluster}/{namespace}`               | ✅          | 返回 `ApolloConfigDTO`：`configurations` + `releaseKey`；未发布 → **404**（客户端走本地缓存，与真实一致）                                                                      |
+| `GET /configfiles/{appId}/{cluster}/{namespace}`           | ✅          | configurations 拍平为 `k=v` 文本，`text/plain`（ConfigFileController 的 properties 形态）                                                                          |
+| `GET /configfiles/json/{appId}/{cluster}/{namespace}`      | ✅          | configurations 序列化为 JSON —— **agollo 首次同步请求的正是这个**；文件型 namespace 以 `{"content": "<文件原文>"}` 到达；未发布 → **404 空 body**（与 `/configs` 不同，此处真实 Apollo 就是裸 404） |
+| `GET /configfiles/raw/{appId}/{cluster}/{namespace}`       | ✅          | 文件原文返回；`Content-Type` 按格式：`.json` → `application/json`，`.yml/.yaml` → `application/yaml`，其余 `text/plain`；properties namespace 拍平为 `k=v`                 |
+| properties / `.yml` / `.yaml` / `.json` / `.txt` namespace | ✅          | 文件型 namespace 按真实方式折叠为 `configurations["content"]`；`.json` 为 map 的 JSON 序列化，`.yml/.yaml` 为扁平 `key: value`，`.txt` 为 `key=value`                          |
+| `GET /notifications/v2` **长轮询**                            | ✅          | 客户端 id 落后 → 立即 200 返回**全部变化的 namespace**（对齐真实 Apollo 的失配检查——一次回齐；其发布唤醒只回刚发布的那个——此处唤醒后重比对，为其超集）；无变化 → 挂住请求直到有发布或超时；超时返回 **404**（"无变更"，客户端继续下一轮）          |
+| `trigger` 参数（v2）                                           | ✅          | 按秒指定挂起时长，钳制在 1s..60s；非法值回退默认，与真实服务端一致                                                                                                                   |
+| 未创建的 namespace 参与通知                                        | ✅          | 服务端视其为 id `-1`：客户端初始 `-1` 与之相等 → 不触发通知（真实 Apollo 语义）                                                                                                    |
+| `notificationId` 语义                                        | ✅          | 每次发布 +1，per-(appId,cluster,namespace) 独立计数                                                                                                              |
+| `releaseKey` 格式                                            | ✅          | `yyyyMMddHHmmss-<12hex>`，每次发布轮换                                                                                                                         |
+| `GET /notifications`（v1）                                   | ✅          | 同 v2 逻辑（真实客户端兼容层）                                                                                                                                       |
+| `GET /services/config`（Meta 服务发现）                          | ✅          | 返回 `APOLLO-CONFIGSERVICE` 单实例，`homepageUrl` 即本服务 —— 客户端只给 meta 地址也能找到配置服务                                                                               |
+| 默认 `cluster=default`                                       | ✅          | 通知请求缺 cluster 时按 `default` 处理                                                                                                                           |
+| 404/400 错误体                                                | ✅          | `{"message": "..."}`（Spring 风格错误体）                                                                                                                      |
+| 客户端断连                                                      | ✅          | 挂起的长轮询随 `r.Context().Done()` 释放，不泄漏 goroutine                                                                                                           |
+| 并发发布/多客户端轮询                                                | ✅          | 发布原子唤醒所有等待者；醒来后重算全部差异，事件不会丢失                                                                                                                            |
 
 ### 暂不模拟（与真实 Apollo 的差异）
 
@@ -81,9 +81,9 @@ m.Set("application.yml", map[string]string{"log": "info"})  // 文件型 namespa
 
 ## 已验证的真实客户端
 
-| 客户端                                                          | 状态     | 说明                                                                                 |
-|--------------------------------------------------------------|--------|------------------------------------------------------------------------------------|
-| [agollo v5](https://github.com/apolloconfig/agollo) (Go SDK) | ✅ 示例通过 | 开箱即用（v5.0.0），首次同步即刻拿到真实值；见 `example/agollo/main.go`（`go run example/agollo/main.go`） |
+| 客户端                                                          | 状态     | 说明                                                                                                                                         |
+|--------------------------------------------------------------|--------|--------------------------------------------------------------------------------------------------------------------------------------------|
+| [agollo v5](https://github.com/apolloconfig/agollo) (Go SDK) | ✅ 示例通过 | 开箱即用（v5.0.0），首次同步即刻拿到真实值；见 `example/agollo/main.go`（`go run example/agollo/main.go`）                                                       |
 | [agollo v4](https://github.com/apolloconfig/agollo) (Go SDK) | ✅ 测试通过 | v4.4.0 含严格 `MustStart` 首同步（依赖 `/configfiles/json`，缺它会报 "no config was read"）；见 `example/agollo/agollo_test.go`（`go test ./example/agollo`） |
 
 agollo 适配要点（其他客户端同理）：`AppConfig.IP` 填 `m.URL()`（meta 地址），`AppID`/`Cluster`/`NamespaceName`
@@ -175,7 +175,8 @@ client, err := agollo.StartWithConfig(func() (*config.AppConfig, error) {
 
 ### 创建服务时指定 appId / cluster
 
-所有快捷 API（`Set` / `SetContent` / `Publish` / `Config` / `LoadDir` / ...）都发布到服务器创建时指定的维度。`NewServer(appID, cluster)` / `StartT(t, appID, cluster)` 在创建时一次性指定，免得每次都写 `SetWith`：
+所有快捷 API（`Set` / `SetContent` / `Publish` / `Config` / `LoadDir` / ...）都发布到服务器创建时指定的维度。
+`NewServer(appID, cluster)` / `StartT(t, appID, cluster)` 在创建时一次性指定，免得每次都写 `SetWith`：
 
 ```go
 m := miniapollo.StartT(t, "shop", "dev")
@@ -196,34 +197,35 @@ loaded, err := m.LoadDir("./configs")
 
 命名遵循真实 Apollo 惯例：
 
-| 文件                     | namespace          | 内容                                        |
-|------------------------|--------------------|---------------------------------------------|
-| `application.properties` | `application`    | 按 `key=value` 逐行解析为扁平 kv               |
-| `layout.yml` / `.yaml`  | `layout.yml`      | 文件原文作为 `configurations["content"]`       |
-| `rules.json`            | `rules.json`      | 原文作为 `content`                          |
-| `notes.txt`             | `notes.txt`       | 原文作为 `content`                          |
+| 文件                       | namespace     | 内容                                 |
+|--------------------------|---------------|------------------------------------|
+| `application.properties` | `application` | 按 `key=value` 逐行解析为扁平 kv           |
+| `layout.yml` / `.yaml`   | `layout.yml`  | 文件原文作为 `configurations["content"]` |
+| `rules.json`             | `rules.json`  | 原文作为 `content`                     |
+| `notes.txt`              | `notes.txt`   | 原文作为 `content`                     |
 
-子目录、点开头文件、其他扩展名会被跳过。每个文件立即发布（新 release + 通知），挂起的长轮询会被唤醒。`LoadFile` 加载单个文件；`LoadDirWith` / `LoadFileWith` 支持显式指定维度。
+子目录、点开头文件、其他扩展名会被跳过。每个文件立即发布（新 release + 通知），挂起的长轮询会被唤醒。`LoadFile` 加载单个文件；
+`LoadDirWith` / `LoadFileWith` 支持显式指定维度。
 
 ## API 一览
 
-| 方法                                               | 说明                                                                    |
-|--------------------------------------------------|-----------------------------------------------------------------------|
-| `NewServer(appID, cluster) (*Server, error)`     | 启动（127.0.0.1 随机端口），指定维度（快捷 API 全部用它）                  |
-| `StartT(t, appID, cluster)`                      | 测试助手：启动 + 自动关闭，同时指定维度                                    |
-| `Close()`                                        | 关闭；可重复调用                                                              |
-| `URL() / Host()`                                 | `http://127.0.0.1:port` / `127.0.0.1:port`，给 `APOLLO_META` / meta 地址用 |
-| `Set(ns, kv)`                                    | 发布 namespace（服务器维度），自动出新 release                             |
-| `SetWith(app, cluster, ns, kv)`                  | 同上，显式三维度                                                              |
-| `SetContent(ns, s)` / `SetContentWith(...)`      | 以原文发布文件型 namespace（真实 YAML/JSON blob）                                 |
-| `LoadDir(dir) ([]string, error)`                 | 加载目录下全部配置文件为 namespace（文件名即 namespace），返回排序后列表        |
-| `LoadDirWith(app, cluster, dir)`                 | 同上，显式指定维度                                                            |
-| `LoadFile(file) (string, error)` / `LoadFileWith(...)` | 加载单个配置文件，返回发布成的 namespace                                |
-| `Publish(ns)` / `PublishWith(...)`               | 不改值再发布一次（id+1、releaseKey 轮换、唤醒轮询）                                     |
-| `Config(ns)` / `ConfigWith(...)`                 | 读回当前配置（拷贝），断言用                                                        |
-| `ReleaseKey(ns)` / `ReleaseKeyWith(...)`         | 当前 releaseKey                                                         |
-| `NotificationID(ns)` / `NotificationIDWith(...)` | 当前通知 id（发布序号）                                                         |
-| `SetPollTimeout(d)`                              | 长轮询挂起时长，默认 30s（同真实 Apollo）；测试建议 100ms 级                               |
+| 方法                                                     | 说明                                                                    |
+|--------------------------------------------------------|-----------------------------------------------------------------------|
+| `NewServer(appID, cluster) (*Server, error)`           | 启动（127.0.0.1 随机端口），指定维度（快捷 API 全部用它）                                  |
+| `StartT(t, appID, cluster)`                            | 测试助手：启动 + 自动关闭，同时指定维度                                                 |
+| `Close()`                                              | 关闭；可重复调用                                                              |
+| `URL() / Host()`                                       | `http://127.0.0.1:port` / `127.0.0.1:port`，给 `APOLLO_META` / meta 地址用 |
+| `Set(ns, kv)`                                          | 发布 namespace（服务器维度），自动出新 release                                      |
+| `SetWith(app, cluster, ns, kv)`                        | 同上，显式三维度                                                              |
+| `SetContent(ns, s)` / `SetContentWith(...)`            | 以原文发布文件型 namespace（真实 YAML/JSON blob）                                 |
+| `LoadDir(dir) ([]string, error)`                       | 加载目录下全部配置文件为 namespace（文件名即 namespace），返回排序后列表                        |
+| `LoadDirWith(app, cluster, dir)`                       | 同上，显式指定维度                                                             |
+| `LoadFile(file) (string, error)` / `LoadFileWith(...)` | 加载单个配置文件，返回发布成的 namespace                                             |
+| `Publish(ns)` / `PublishWith(...)`                     | 不改值再发布一次（id+1、releaseKey 轮换、唤醒轮询）                                     |
+| `Config(ns)` / `ConfigWith(...)`                       | 读回当前配置（拷贝），断言用                                                        |
+| `ReleaseKey(ns)` / `ReleaseKeyWith(...)`               | 当前 releaseKey                                                         |
+| `NotificationID(ns)` / `NotificationIDWith(...)`       | 当前通知 id（发布序号）                                                         |
+| `SetPollTimeout(d)`                                    | 长轮询挂起时长，默认 30s（同真实 Apollo）；测试建议 100ms 级                               |
 
 ## 项目结构
 

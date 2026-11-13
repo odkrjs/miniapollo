@@ -18,7 +18,12 @@ type notifyItem struct {
 // (GET /notifications/v2, plus the /notifications v1 alias):
 //
 //   - if any requested namespace is ahead of the client's id, respond 200
-//     with that single changed namespace (real Apollo also answers one);
+//     with **every** changed namespace, like real Apollo's mismatch check
+//     (NotificationControllerV2#getApolloConfigNotifications answers all
+//     behind-namespaces at once; its publish wake answers the one released
+//     namespace — here the wake re-diffs, so a parked poll answers the
+//     released one plus anything still pending: a superset clients handle
+//     identically);
 //   - otherwise hold the request until something is published or the
 //     timeout (default 30s, `trigger` seconds on v2, clamped 1s..60s) lapses;
 //     on timeout respond 404, meaning "nothing changed, poll again".
@@ -113,27 +118,33 @@ func (s *Server) currentPollTimeout() time.Duration {
 }
 
 // notifyResponse returns the 200 body if the client is behind on some
-// namespace, following Apollo's "answer the first changed one" rule.
+// namespace: every namespace whose server id is ahead of the client's is
+// answered at once, matching real Apollo's mismatch check
+// (NotificationControllerV2: `latestId > clientSideId` → include).
 // Never-published namespaces count as server id -1 (client's initial id
 // is -1 too, so an absent namespace never triggers a notification).
 func (s *Server) notifyResponse(appID, cluster string, items []notifyItem) (body []byte, changed bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	changedItems := make([]notifyItem, 0, len(items))
 	for _, it := range items {
 		serverID := int64(-1)
 		if st := s.getNamespaceLocked(appID, cluster, it.NamespaceName); st != nil {
 			serverID = st.notificationID
 		}
-		if serverID != it.NotificationID {
-			out := []notifyItem{{NamespaceName: it.NamespaceName, NotificationID: serverID}}
-			body, err := json.Marshal(out)
-			if err != nil {
-				return nil, false
-			}
-			return body, true
+		if serverID > it.NotificationID {
+			changedItems = append(changedItems,
+				notifyItem{NamespaceName: it.NamespaceName, NotificationID: serverID})
 		}
 	}
-	return nil, false
+	if len(changedItems) == 0 {
+		return nil, false
+	}
+	body, err := json.Marshal(changedItems)
+	if err != nil {
+		return nil, false
+	}
+	return body, true
 }
 
 // ---- watcher registry ----

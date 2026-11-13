@@ -48,24 +48,24 @@ m.Set("application.yml", map[string]string{"log": "info"})  // file-type namespa
 
 ## What miniapollo simulates
 
-| Apollo behavior                                             | miniapollo | Notes                                                                                                                                                                                                                             |
-|-------------------------------------------------------------|------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `GET /configs/{appId}/{cluster}/{namespace}`                | ✅          | Returns `ApolloConfigDTO`: `configurations` + `releaseKey`; unpublished → **404** (client falls back to local cache, same as real Apollo)                                                                                         |
-| `GET /configfiles/{appId}/{cluster}/{namespace}` | ✅ | Configurations flattened to `k=v` text, `text/plain` (ConfigFileController properties form) |
-| `GET /configfiles/json/{appId}/{cluster}/{namespace}` | ✅ | Configurations as JSON — **the form agollo requests at first sync**; file-type namespaces arrive as `{"content": "<file>"}`; unpublished → **404 with empty body** (bare 404 here, unlike `/configs`, same as real Apollo) |
-| `GET /configfiles/raw/{appId}/{cluster}/{namespace}` | ✅ | File content verbatim; `Content-Type` by format: `.json` → `application/json`, `.yml/.yaml` → `application/yaml`, else `text/plain`; properties namespaces flatten to `k=v` |
-| properties / `.yml` / `.yaml` / `.json` / `.txt` namespaces | ✅          | File-type namespaces folded into `configurations["content"]` the real way; `.json` is JSON-serialized map, `.yml/.yaml` is flat `key: value`, `.txt` is `key=value`                                                               |
-| `GET /notifications/v2` **long-poll**                       | ✅          | Client id behind → immediate 200 with the **first changed namespace** (real Apollo also returns only one); no change → request hangs until publish or timeout; timeout returns **404** ("no change", client continues next round) |
-| `trigger` parameter (v2)                                    | ✅          | Specifies hang duration in seconds, clamped to 1s..60s; invalid values fall back to default, matching real server behavior                                                                                                        |
-| Non-existent namespaces in notifications                    | ✅          | Server treats them as id `-1`: client initial `-1` equals it → no notification triggered (real Apollo semantics)                                                                                                                  |
-| `notificationId` semantics                                  | ✅          | Increments by 1 on each publish, counted independently per (appId, cluster, namespace)                                                                                                                                            |
-| `releaseKey` format                                         | ✅          | `yyyyMMddHHmmss-<12hex>`, rotated on each publish                                                                                                                                                                                 |
-| `GET /notifications` (v1)                                   | ✅          | Same logic as v2 (real client compatibility layer)                                                                                                                                                                                |
-| `GET /services/config` (Meta service discovery)             | ✅          | Returns a single `APOLLO-CONFIGSERVICE` instance with `homepageUrl` pointing to this server — clients given only the meta address can still find the config service                                                               |
-| Default `cluster=default`                                   | ✅          | Notification requests missing cluster are treated as `default`                                                                                                                                                                    |
-| 404/400 error bodies                                        | ✅          | `{"message": "..."}` (Spring-style error body)                                                                                                                                                                                    |
-| Client disconnect                                           | ✅          | Hung long-polls released via `r.Context().Done()`, no goroutine leaks                                                                                                                                                             |
-| Concurrent publishes / multi-client polling                 | ✅          | Publish atomically wakes all waiters; on wake, full diff is recomputed — no events lost                                                                                                                                           |
+| Apollo behavior                                             | miniapollo | Notes                                                                                                                                                                                                                                                                                                                        |
+|-------------------------------------------------------------|------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `GET /configs/{appId}/{cluster}/{namespace}`                | ✅          | Returns `ApolloConfigDTO`: `configurations` + `releaseKey`; unpublished → **404** (client falls back to local cache, same as real Apollo)                                                                                                                                                                                    |
+| `GET /configfiles/{appId}/{cluster}/{namespace}`            | ✅          | Configurations flattened to `k=v` text, `text/plain` (ConfigFileController properties form)                                                                                                                                                                                                                                  |
+| `GET /configfiles/json/{appId}/{cluster}/{namespace}`       | ✅          | Configurations as JSON — **the form agollo requests at first sync**; file-type namespaces arrive as `{"content": "<file>"}`; unpublished → **404 with empty body** (bare 404 here, unlike `/configs`, same as real Apollo)                                                                                                   |
+| `GET /configfiles/raw/{appId}/{cluster}/{namespace}`        | ✅          | File content verbatim; `Content-Type` by format: `.json` → `application/json`, `.yml/.yaml` → `application/yaml`, else `text/plain`; properties namespaces flatten to `k=v`                                                                                                                                                  |
+| properties / `.yml` / `.yaml` / `.json` / `.txt` namespaces | ✅          | File-type namespaces folded into `configurations["content"]` the real way; `.json` is JSON-serialized map, `.yml/.yaml` is flat `key: value`, `.txt` is `key=value`                                                                                                                                                          |
+| `GET /notifications/v2` **long-poll**                       | ✅          | Client id behind → immediate 200 with **every changed namespace** (real Apollo's mismatch check answers all at once; its publish wake answers the released one — here the wake re-diffs, a superset); no change → request hangs until publish or timeout; timeout returns **404** ("no change", client continues next round) |
+| `trigger` parameter (v2)                                    | ✅          | Specifies hang duration in seconds, clamped to 1s..60s; invalid values fall back to default, matching real server behavior                                                                                                                                                                                                   |
+| Non-existent namespaces in notifications                    | ✅          | Server treats them as id `-1`: client initial `-1` equals it → no notification triggered (real Apollo semantics)                                                                                                                                                                                                             |
+| `notificationId` semantics                                  | ✅          | Increments by 1 on each publish, counted independently per (appId, cluster, namespace)                                                                                                                                                                                                                                       |
+| `releaseKey` format                                         | ✅          | `yyyyMMddHHmmss-<12hex>`, rotated on each publish                                                                                                                                                                                                                                                                            |
+| `GET /notifications` (v1)                                   | ✅          | Same logic as v2 (real client compatibility layer)                                                                                                                                                                                                                                                                           |
+| `GET /services/config` (Meta service discovery)             | ✅          | Returns a single `APOLLO-CONFIGSERVICE` instance with `homepageUrl` pointing to this server — clients given only the meta address can still find the config service                                                                                                                                                          |
+| Default `cluster=default`                                   | ✅          | Notification requests missing cluster are treated as `default`                                                                                                                                                                                                                                                               |
+| 404/400 error bodies                                        | ✅          | `{"message": "..."}` (Spring-style error body)                                                                                                                                                                                                                                                                               |
+| Client disconnect                                           | ✅          | Hung long-polls released via `r.Context().Done()`, no goroutine leaks                                                                                                                                                                                                                                                        |
+| Concurrent publishes / multi-client polling                 | ✅          | Publish atomically wakes all waiters; on wake, full diff is recomputed — no events lost                                                                                                                                                                                                                                      |
 
 ### Not simulated (differences from real Apollo)
 
@@ -78,15 +78,16 @@ m.Set("application.yml", map[string]string{"log": "info"})  // file-type namespa
 - Multi-instance load balancing within a cluster: a single instance represents the cluster.
 
 > Design principle: **only simulate what clients can observe**. Anything invisible to clients (Portal UI, DB, Eureka
-> cluster topology) is intentionally omitted — this is the fundamental difference between miniapollo and "spinning up real
+> cluster topology) is intentionally omitted — this is the fundamental difference between miniapollo and "spinning up
+> real
 > Apollo".
 
 ## Verified real clients
 
-| Client                                                       | Status           | Notes                                                                                                                 |
-|--------------------------------------------------------------|------------------|-----------------------------------------------------------------------------------------------------------------------|
-| [agollo v5](https://github.com/apolloconfig/agollo) (Go SDK) | ✅ Example passes | Works out of the box (v5.0.0); first sync lands real values immediately; see `example/agollo/main.go` (`go run example/agollo/main.go`) |
-| [agollo v4](https://github.com/apolloconfig/agollo) (Go SDK) | ✅ Test passes | v4.4.0 incl. strict `MustStart` — first sync needs `/configfiles/json`, previously failed with "no config was read"; see `example/agollo/agollo_test.go` (`go test ./example/agollo`) |
+| Client                                                       | Status           | Notes                                                                                                                                                                                 |
+|--------------------------------------------------------------|------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| [agollo v5](https://github.com/apolloconfig/agollo) (Go SDK) | ✅ Example passes | Works out of the box (v5.0.0); first sync lands real values immediately; see `example/agollo/main.go` (`go run example/agollo/main.go`)                                               |
+| [agollo v4](https://github.com/apolloconfig/agollo) (Go SDK) | ✅ Test passes    | v4.4.0 incl. strict `MustStart` — first sync needs `/configfiles/json`, previously failed with "no config was read"; see `example/agollo/agollo_test.go` (`go test ./example/agollo`) |
 
 agollo integration notes (same applies to other clients): set `AppConfig.IP` to `m.URL()` (meta address), and keep
 `AppID`/`Cluster`/`NamespaceName` consistent with the publish dimensions. miniapollo's `/services/config` registers
@@ -178,7 +179,9 @@ A fully runnable example is in `example/agollo/main.go` (`go run example/agollo/
 
 ### Custom dimensions at server creation
 
-All the shortcut APIs (`Set` / `SetContent` / `Publish` / `Config` / `LoadDir` / ...) publish under the dimensions specified at server creation. `NewServer(appID, cluster)` / `StartT(t, appID, cluster)` let you set them once, instead of repeating `SetWith` on every call:
+All the shortcut APIs (`Set` / `SetContent` / `Publish` / `Config` / `LoadDir` / ...) publish under the dimensions
+specified at server creation. `NewServer(appID, cluster)` / `StartT(t, appID, cluster)` let you set them once, instead
+of repeating `SetWith` on every call:
 
 ```go
 m := miniapollo.StartT(t, "shop", "dev")
@@ -188,7 +191,8 @@ m.Set("application", map[string]string{"rpc.timeout": "100"})
 
 ### Loading local config files (file name = namespace)
 
-`LoadDir` publishes every recognized config file in a directory as a namespace — handy when you already keep configs as files on disk and want the embedded server to serve them:
+`LoadDir` publishes every recognized config file in a directory as a namespace — handy when you already keep configs as
+files on disk and want the embedded server to serve them:
 
 ```go
 m := miniapollo.StartT(t, "shop", "dev")
@@ -199,34 +203,36 @@ loaded, err := m.LoadDir("./configs")
 
 Naming follows real Apollo conventions:
 
-| File                  | Namespace          | Content                                              |
-|-----------------------|--------------------|------------------------------------------------------|
-| `application.properties` | `application`    | parsed `key=value` lines (flat kv map)               |
-| `layout.yml` / `.yaml`  | `layout.yml`     | raw file text as `configurations["content"]`         |
-| `rules.json`            | `rules.json`     | raw file text as `content`                           |
-| `notes.txt`             | `notes.txt`      | raw file text as `content`                           |
+| File                     | Namespace     | Content                                      |
+|--------------------------|---------------|----------------------------------------------|
+| `application.properties` | `application` | parsed `key=value` lines (flat kv map)       |
+| `layout.yml` / `.yaml`   | `layout.yml`  | raw file text as `configurations["content"]` |
+| `rules.json`             | `rules.json`  | raw file text as `content`                   |
+| `notes.txt`              | `notes.txt`   | raw file text as `content`                   |
 
-Sub-directories, dot-files and other extensions are skipped. Each file is published immediately (fresh release + notification), so parked long-pollers are woken. `LoadFile` does the same for a single file; `LoadDirWith` / `LoadFileWith` take explicit dimensions.
+Sub-directories, dot-files and other extensions are skipped. Each file is published immediately (fresh release +
+notification), so parked long-pollers are woken. `LoadFile` does the same for a single file; `LoadDirWith` /
+`LoadFileWith` take explicit dimensions.
 
 ## API Reference
 
-| Method                                           | Description                                                                                 |
-|--------------------------------------------------|---------------------------------------------------------------------------------------------|
-| `NewServer(appID, cluster) (*Server, error)`     | Start server (127.0.0.1 random port), shortcut APIs use the given dimensions               |
-| `StartT(t, appID, cluster)`                      | Test helper: start + `t.Cleanup(Close)`, sets dimensions                                    |
-| `Close()`                                        | Close; safe to call repeatedly                                                              |
-| `URL() / Host()`                                 | `http://127.0.0.1:port` / `127.0.0.1:port`, for `APOLLO_META` / meta address                |
-| `Set(ns, kv)`                                    | Publish namespace (server's dimensions), auto new release                                   |
-| `SetWith(app, cluster, ns, kv)`                  | Same, with explicit three dimensions                                                        |
-| `SetContent(ns, s)` / `SetContentWith(...)`      | Publish file-type namespace as raw content (real YAML/JSON blob)                            |
-| `LoadDir(dir) ([]string, error)`                 | Load every config file in dir as a namespace (file name = namespace); returns sorted list   |
-| `LoadDirWith(app, cluster, dir)`                 | Same, for explicit dimensions                                                               |
-| `LoadFile(file) (string, error)` / `LoadFileWith(...)` | Load a single config file; returns the namespace it was published as                 |
-| `Publish(ns)` / `PublishWith(...)`               | Publish again without changing values (id+1, releaseKey rotation, wake polls)               |
-| `Config(ns)` / `ConfigWith(...)`                 | Read back current config (copy), for assertions                                             |
-| `ReleaseKey(ns)` / `ReleaseKeyWith(...)`         | Current releaseKey                                                                          |
-| `NotificationID(ns)` / `NotificationIDWith(...)` | Current notification id (publish sequence number)                                           |
-| `SetPollTimeout(d)`                              | Long-poll hang duration, default 30s (same as real Apollo); recommend 100ms range for tests |
+| Method                                                 | Description                                                                                 |
+|--------------------------------------------------------|---------------------------------------------------------------------------------------------|
+| `NewServer(appID, cluster) (*Server, error)`           | Start server (127.0.0.1 random port), shortcut APIs use the given dimensions                |
+| `StartT(t, appID, cluster)`                            | Test helper: start + `t.Cleanup(Close)`, sets dimensions                                    |
+| `Close()`                                              | Close; safe to call repeatedly                                                              |
+| `URL() / Host()`                                       | `http://127.0.0.1:port` / `127.0.0.1:port`, for `APOLLO_META` / meta address                |
+| `Set(ns, kv)`                                          | Publish namespace (server's dimensions), auto new release                                   |
+| `SetWith(app, cluster, ns, kv)`                        | Same, with explicit three dimensions                                                        |
+| `SetContent(ns, s)` / `SetContentWith(...)`            | Publish file-type namespace as raw content (real YAML/JSON blob)                            |
+| `LoadDir(dir) ([]string, error)`                       | Load every config file in dir as a namespace (file name = namespace); returns sorted list   |
+| `LoadDirWith(app, cluster, dir)`                       | Same, for explicit dimensions                                                               |
+| `LoadFile(file) (string, error)` / `LoadFileWith(...)` | Load a single config file; returns the namespace it was published as                        |
+| `Publish(ns)` / `PublishWith(...)`                     | Publish again without changing values (id+1, releaseKey rotation, wake polls)               |
+| `Config(ns)` / `ConfigWith(...)`                       | Read back current config (copy), for assertions                                             |
+| `ReleaseKey(ns)` / `ReleaseKeyWith(...)`               | Current releaseKey                                                                          |
+| `NotificationID(ns)` / `NotificationIDWith(...)`       | Current notification id (publish sequence number)                                           |
+| `SetPollTimeout(d)`                                    | Long-poll hang duration, default 30s (same as real Apollo); recommend 100ms range for tests |
 
 ## Project Structure
 

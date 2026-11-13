@@ -210,23 +210,45 @@ func TestNotificationsWakeOnPublish(t *testing.T) {
 	}
 }
 
-func TestNotificationsFirstChangedOnly(t *testing.T) {
+func TestNotificationsAllChangedAtOnce(t *testing.T) {
 	s := StartT(t, "SampleApp", "default")
 	s.Set("ns.one", map[string]string{"a": "1"}) // id 1
 	s.Set("ns.two", map[string]string{"b": "2"}) // id 1
 
-	// both namespaces changed client-side-behind; answer must be a single
-	// entry, the first one in request order (real Apollo behaviour)
+	// both namespaces behind the client -> real Apollo answers BOTH at once
+	// (NotificationControllerV2 answers every behind-namespace, request order)
 	items := []notifyItem{
 		{NamespaceName: "ns.one", NotificationID: -1},
 		{NamespaceName: "ns.two", NotificationID: -1},
 	}
 	code, out := poll(t, s, "SampleApp", "default", items, "")
-	if code != http.StatusOK || len(out) != 1 {
-		t.Fatalf("want 200 with a single entry, got %d %v", code, out)
+	if code != http.StatusOK || len(out) != 2 {
+		t.Fatalf("want 200 with both changed entries, got %d %v", code, out)
 	}
-	if out[0].NamespaceName != "ns.one" {
-		t.Fatalf("want first-changed ns.one, got %v", out)
+	if out[0].NamespaceName != "ns.one" || out[1].NamespaceName != "ns.two" {
+		t.Fatalf("changed list should keep request order: %v", out)
+	}
+	if out[0].NotificationID != 1 || out[1].NotificationID != 1 {
+		t.Fatalf("notification ids: %v", out)
+	}
+
+	// partially behind: only the behind one is answered
+	code, out = poll(t, s, "SampleApp", "default", []notifyItem{
+		{NamespaceName: "ns.one", NotificationID: 1},
+		{NamespaceName: "ns.two", NotificationID: -1},
+	}, "")
+	if code != http.StatusOK || len(out) != 1 || out[0].NamespaceName != "ns.two" {
+		t.Fatalf("want only the behind namespace answered, got %d %v", code, out)
+	}
+
+	// client ahead of server (e.g. server data rebuilt): never answered,
+	// like real Apollo's strict `>` comparison — holds to timeout instead
+	s.SetPollTimeout(100 * time.Millisecond)
+	code, _ = poll(t, s, "SampleApp", "default", []notifyItem{
+		{NamespaceName: "ns.two", NotificationID: 99},
+	}, "")
+	if code != http.StatusNotFound {
+		t.Fatalf("client ahead of server should hold (404), got %d", code)
 	}
 }
 
